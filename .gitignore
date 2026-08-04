@@ -1,0 +1,7 @@
+.env
+dm_saas.db
+venv/
+node_modules/
+__pycache__/
+*.pyc
+.DS_Store
