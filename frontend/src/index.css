@@ -1,12 +1,12 @@
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&display=swap');
 
 :root {
-  --bg-dark: #242729;
+  --bg-dark: #34373B;
   --bg-sidebar: #1f2123;
   --bg-card: rgba(255, 255, 255, 0.95);
   --bg-card-dark: rgba(36, 39, 41, 0.7);
-  --accent-mint: #76e8a7;
-  --accent-mint-hover: #5fc98d;
+  --accent-mint: #00FFA3;
+  --accent-mint-hover: #00e693;
   --text-primary: #2d3135;
   --text-secondary: #606770;
   --text-muted: #8d949e;
@@ -14,7 +14,7 @@
   --border-light: rgba(228, 230, 235, 0.8);
   --border-glass: rgba(255, 255, 255, 0.2);
   --shadow-premium: 0 8px 32px 0 rgba(0, 0, 0, 0.15);
-  --font-family: 'Outfit', sans-serif;
+  --font-family: 'DM Sans', sans-serif;
   --transition-smooth: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
 }
 

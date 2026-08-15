@@ -114,8 +114,32 @@ const OutreachCenter: React.FC = () => {
           {currentLead && (
             <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
               {currentLead.validation_status !== 'QUALIFIED' && (
-                <div style={{ backgroundColor: '#fff4e6', border: '1px solid #ffd8a8', color: '#d9480f', padding: '14px', borderRadius: '10px' }}>
-                  Este prospecto requiere revisión antes de iniciar outreach. {currentLead.validation_reason || 'Faltan validaciones de calidad.'}
+                <div style={{ backgroundColor: '#fff4e6', border: '1px solid #ffd8a8', color: '#d9480f', padding: '14px', borderRadius: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px' }}>
+                  <div>
+                    Este prospecto requiere revisión antes de iniciar outreach. {currentLead.validation_reason || 'Faltan validaciones de calidad.'}
+                  </div>
+                  <button
+                    onClick={async () => {
+                      try {
+                        await updateLeadStatus(currentLead.id, currentLead.status, 'QUALIFIED');
+                      } catch (err) {
+                        alert('Error al aprobar el prospecto');
+                      }
+                    }}
+                    style={{
+                      backgroundColor: '#d9480f',
+                      color: 'white',
+                      border: 'none',
+                      padding: '8px 16px',
+                      borderRadius: '8px',
+                      fontWeight: 700,
+                      fontSize: '0.8rem',
+                      cursor: 'pointer',
+                      whiteSpace: 'nowrap'
+                    }}
+                  >
+                    Aprobar manualmente
+                  </button>
                 </div>
               )}
               

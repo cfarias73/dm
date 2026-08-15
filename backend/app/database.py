@@ -31,6 +31,8 @@ class User(Base):
     name = Column(String, nullable=False)
     email = Column(String, unique=True, nullable=False)
     role = Column(String, default="member")  # "admin" or "member"
+    auth_user_id = Column(String, unique=True)
+    is_active = Column(Integer, default=1)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     organization = relationship("Organization", back_populates="users")
@@ -46,17 +48,40 @@ class Campaign(Base):
     status = Column(String, default="draft")  # "draft", "running", "completed", "failed", "paused"
     progress = Column(Float, default=0.0)  # 0 to 100
     max_leads = Column(Integer, default=12)
+    user_id = Column(String, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     organization = relationship("Organization", back_populates="campaigns")
     leads = relationship("Lead", back_populates="campaign", cascade="all, delete-orphan")
     logs = relationship("AgentLog", back_populates="campaign", cascade="all, delete-orphan")
+    runs = relationship("CampaignRun", back_populates="campaign", cascade="all, delete-orphan")
+
+
+class CampaignRun(Base):
+    __tablename__ = "campaign_runs"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    campaign_id = Column(String, ForeignKey("campaigns.id"), nullable=False)
+    organization_id = Column(String, ForeignKey("organizations.id"), nullable=False)
+    run_type = Column(String, default="initial")
+    status = Column(String, default="queued")
+    city = Column(String, default="")
+    zones = Column(Text)
+    max_leads = Column(Integer, default=12)
+    error_message = Column(Text)
+    started_at = Column(DateTime)
+    completed_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    campaign = relationship("Campaign", back_populates="runs")
+    leads = relationship("Lead", back_populates="campaign_run")
 
 class Lead(Base):
     __tablename__ = "leads"
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     campaign_id = Column(String, ForeignKey("campaigns.id"), nullable=False)
+    campaign_run_id = Column(String, ForeignKey("campaign_runs.id"), nullable=True)
     organization_id = Column(String, ForeignKey("organizations.id"), nullable=False)
     company_name = Column(String, nullable=False)
     website = Column(String)
@@ -82,6 +107,7 @@ class Lead(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     campaign = relationship("Campaign", back_populates="leads")
+    campaign_run = relationship("CampaignRun", back_populates="leads")
 
 class AgentLog(Base):
     __tablename__ = "agent_logs"
@@ -105,7 +131,23 @@ def init_db():
             "max_leads": "INTEGER DEFAULT 12",
             "city": "VARCHAR DEFAULT ''",
         },
+        "campaign_runs": {
+            "run_type": "VARCHAR DEFAULT 'initial'",
+            "status": "VARCHAR DEFAULT 'queued'",
+            "city": "VARCHAR DEFAULT ''",
+            "zones": "TEXT",
+            "max_leads": "INTEGER DEFAULT 12",
+            "error_message": "TEXT",
+            "started_at": "DATETIME",
+            "completed_at": "DATETIME",
+            "created_at": "DATETIME",
+        },
+        "users": {
+            "auth_user_id": "VARCHAR",
+            "is_active": "INTEGER DEFAULT 1",
+        },
         "leads": {
+            "campaign_run_id": "VARCHAR",
             "source_url": "TEXT",
             "source_type": "VARCHAR",
             "source_checked_at": "DATETIME",
@@ -130,6 +172,27 @@ def init_db():
     # Pre-populate some dummy data for the demonstration
     db = SessionLocal()
     try:
+        # Backfill the initial run for campaigns created before campaign_runs
+        # existed, preserving their current history.
+        legacy_campaigns = db.query(Campaign).all()
+        for campaign in legacy_campaigns:
+            if not campaign.runs:
+                run = CampaignRun(
+                    campaign_id=campaign.id,
+                    organization_id=campaign.organization_id,
+                    run_type="initial",
+                    status=campaign.status,
+                    city=campaign.city or "",
+                    max_leads=campaign.max_leads or 12,
+                    created_at=campaign.created_at,
+                    completed_at=campaign.created_at if campaign.status != "running" else None,
+                )
+                db.add(run)
+                db.flush()
+                for lead in campaign.leads:
+                    lead.campaign_run_id = run.id
+        db.commit()
+
         # Check if we already have data
         if db.query(Organization).first() is None:
             # Default Organization (DM Event Lovers - Free Plan)

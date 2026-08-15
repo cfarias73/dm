@@ -4,7 +4,7 @@ import re
 import datetime
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
-from backend.app.database import Campaign, Lead, AgentLog, Organization, SessionLocal
+from backend.app.database import Campaign, CampaignRun, Lead, AgentLog, Organization, SessionLocal
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from dotenv import load_dotenv
@@ -172,13 +172,23 @@ def validation_reason(comp: dict) -> str:
         missing.append("contacto institucional no encontrado")
     return ", ".join(missing) or "Validaciones mínimas completadas"
 
-def execute_pipeline(campaign_id: str):
+
+def normalize_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (value or "").lower())
+
+def execute_pipeline(campaign_id: str, run_id: str | None = None):
     db = SessionLocal()
     try:
         campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
         if not campaign:
             print(f"Campaign {campaign_id} not found")
             return
+
+        run = db.query(CampaignRun).filter(CampaignRun.id == run_id).first() if run_id else None
+        if run:
+            run.status = "running"
+            run.started_at = datetime.datetime.utcnow()
+            db.commit()
 
         org = db.query(Organization).filter(Organization.id == campaign.organization_id).first()
         if not org:
@@ -210,16 +220,30 @@ def execute_pipeline(campaign_id: str):
         
         # Decide if we can run real APIs or fallback to mock
         has_keys = bool(tavily_key and deepseek_key)
+        app_env = os.environ.get("APP_ENV", "development")
+        
+        if app_env == "production" and not has_keys:
+            campaign.status = "failed"
+            db.commit()
+            error_log = AgentLog(
+                campaign_id=campaign_id,
+                agent_name="Supervisor Planning",
+                status="failed",
+                message="Error crítico: No hay saldo o llaves API configuradas. En producción no se permite la simulación de respaldo."
+            )
+            db.add(error_log)
+            db.commit()
+            return
         
         # We parse the prompt for fallbacks
         prompt_lower = campaign.prompt.lower()
-        explicit_city = (campaign.city or "").strip()
+        explicit_city = ((run.city if run else "") or campaign.city or "").strip()
         
         # Intelligent defaults
         target_niche = "Gimnasios"
         target_location = "Bogotá"
         search_queries = ["Gimnasios Bogotá websites", "Centros fitness Bogotá"]
-        max_leads = max(1, min(campaign.max_leads or 12, 100))
+        max_leads = max(1, min((run.max_leads if run else campaign.max_leads) or 12, 100))
         
         # Hardcoded templates as fallbacks
         if "restaurante" in prompt_lower or "comida" in prompt_lower:
@@ -270,7 +294,12 @@ def execute_pipeline(campaign_id: str):
                             for query in search_queries
                         ]
 
-                if "guadalajara" in target_location.lower():
+                if run and run.zones:
+                    zones = json.loads(run.zones)
+                    search_queries = search_queries + [
+                        f"{target_niche} {zone} {target_location} sitio oficial" for zone in zones
+                    ]
+                elif "guadalajara" in target_location.lower():
                     zones = ["Centro", "Providencia", "Chapultepec", "Chapalita", "Zapopan", "Tlaquepaque", "Andares"]
                     search_queries = search_queries + [
                         f"{target_niche} {zone} {target_location} sitio oficial" for zone in zones
@@ -282,6 +311,13 @@ def execute_pipeline(campaign_id: str):
                 plan_message = call_deepseek(system_p, user_p, deepseek_key, deepseek_base_url)
                 is_using_real = True
             except Exception as e:
+                if app_env == "production":
+                    campaign.status = "failed"
+                    db.commit()
+                    log1.status = "failed"
+                    log1.message = f"Error crítico: Falló la API de DeepSeek en producción. ({str(e)})"
+                    db.commit()
+                    return
                 plan_message = f"[ADVERTENCIA: Falló la API real de DeepSeek ({str(e)}). Activando simulación inteligente de respaldo...]\n\n"
         
         if not plan_message or not is_using_real:
@@ -431,8 +467,14 @@ def execute_pipeline(campaign_id: str):
                 found_companies = list(found_companies_dict.values())
                 is_using_tavily = True
             except Exception as e:
+                if app_env == "production":
+                    campaign.status = "failed"
+                    db.commit()
+                    log2.status = "failed"
+                    log2.message = f"Error crítico: Falló la búsqueda de Tavily en producción. ({str(e)})"
+                    db.commit()
+                    return
                 print(f"Directory filtering search error: {e}")
-                
         discovery_message = f"Búsqueda finalizada. Se encontraron {len(found_companies)} candidatos verificables o pendientes de revisión en {target_location} (máximo solicitado: {max_leads}):\n"
         for idx, comp in enumerate(found_companies, 1):
             discovery_message += f"{idx}. {comp['name']} ({comp['domain']})\n"
@@ -459,6 +501,13 @@ def execute_pipeline(campaign_id: str):
                     research_message += f"- {comp['name']}: {response[:150]}...\n"
                     continue
                 except Exception as e:
+                    if app_env == "production":
+                        campaign.status = "failed"
+                        db.commit()
+                        log3.status = "failed"
+                        log3.message = f"Error crítico: Falló Deep Research en producción. ({str(e)})"
+                        db.commit()
+                        return
                     print(f"DeepSeek research error: {e}")
 
             comp["research_notes"] = "No verificado: no fue posible obtener evidencia suficiente del sitio o del proveedor de research."
@@ -565,6 +614,13 @@ def execute_pipeline(campaign_id: str):
                     except Exception:
                         pass
                 except Exception as e:
+                    if app_env == "production":
+                        campaign.status = "failed"
+                        db.commit()
+                        log6.status = "failed"
+                        log6.message = f"Error crítico: Falló DeepSeek en Sequence Writer en producción. ({str(e)})"
+                        db.commit()
+                        return
                     print(f"DeepSeek writing error: {e}")
                     
             comp["outreach"] = outreach
@@ -580,12 +636,29 @@ def execute_pipeline(campaign_id: str):
         db.add(log7)
         db.commit()
 
+        # Deduplicate candidates against previous runs in the organization.
+        existing_leads = db.query(Lead).filter(Lead.organization_id == campaign.organization_id).all()
+        existing_keys = {
+            normalize_key(lead.website) if lead.website else normalize_key(lead.company_name)
+            for lead in existing_leads
+        }
+        unique_companies = []
+        for comp in found_companies:
+            candidate_key = normalize_key(comp.get("domain")) if comp.get("domain") else normalize_key(comp.get("name"))
+            if candidate_key and candidate_key in existing_keys:
+                continue
+            if candidate_key:
+                existing_keys.add(candidate_key)
+            unique_companies.append(comp)
+        found_companies = unique_companies
+
         # Save Leads into DB
         qualified_count = sum(1 for comp in found_companies if comp["validation_status"] == "QUALIFIED")
         review_count = sum(1 for comp in found_companies if comp["validation_status"] == "NEEDS_REVIEW")
         for comp in found_companies:
             new_lead = Lead(
                 campaign_id=campaign_id,
+                campaign_run_id=run_id,
                 organization_id=campaign.organization_id,
                 company_name=comp["name"],
                 website=comp["domain"],
@@ -627,11 +700,18 @@ def execute_pipeline(campaign_id: str):
             else "completed_empty"
         )
         campaign.progress = 100.0
+        if run:
+            run.status = campaign.status
+            run.completed_at = datetime.datetime.utcnow()
         db.commit()
 
     except Exception as e:
         db.rollback()
         campaign.status = "failed"
+        if run:
+            run.status = "failed"
+            run.error_message = str(e)
+            run.completed_at = datetime.datetime.utcnow()
         db.commit()
         
         err_log = AgentLog(

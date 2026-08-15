@@ -27,22 +27,41 @@ const LeedsList: React.FC = () => {
   const exportCSV = () => {
     if (filteredLeads.length === 0) return;
     
-    // Simple mock CSV export simulation
-    const headers = ["Company", "Website", "Score", "Priority", "Contact Name", "Contact Role", "Contact Email", "Status"];
+    const headers = [
+      "Company", "Website", "Score", "Priority", "Contact Name", 
+      "Contact Role", "Contact Email", "Status", "Research Notes", 
+      "Validation Status", "Confidence Score", "Email Draft", 
+      "WhatsApp Draft", "LinkedIn Draft"
+    ];
+    
+    const escapeCsv = (val: any) => {
+      if (val === null || val === undefined) return '""';
+      const str = String(val).replace(/"/g, '""');
+      return `"${str}"`;
+    };
+
     const rows = filteredLeads.map(l => [
-      l.company_name, l.website, l.score, l.priority, l.contact_name, l.contact_role, l.contact_email, l.status
+      l.company_name, l.website, l.score, l.priority, l.contact_name, 
+      l.contact_role, l.contact_email, l.status, l.research_notes,
+      l.validation_status, l.confidence_score,
+      l.outreach_messages?.email || '',
+      l.outreach_messages?.whatsapp || '',
+      l.outreach_messages?.linkedin || ''
     ]);
     
-    let csvContent = "data:text/csv;charset=utf-8," 
-      + [headers.join(","), ...rows.map(e => e.map(val => `"${val}"`).join(","))].join("\n");
-      
-    const encodedUri = encodeURI(csvContent);
+    // We don't use encodeURI for the whole content because it can fail on large strings
+    const bom = "\uFEFF";
+    const csvContent = bom + [headers.join(","), ...rows.map(e => e.map(escapeCsv).join(","))].join("\n");
+    
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
+    link.setAttribute("href", url);
     link.setAttribute("download", `leads_${activeCampaign ? activeCampaign.id : 'all'}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   return (
