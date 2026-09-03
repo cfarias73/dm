@@ -16,7 +16,7 @@ const PublicLanding: React.FC = () => (
         <div className="pub-cta-row"><Link to="/login" className="pub-cta">Acceder al workspace <LogIn size={14}/></Link><span className="pub-note">Acceso privado</span></div>
         <div className="pub-features"><span><Check size={14}/> Research con fuentes verificadas</span><span><Check size={14}/> Leads con validación de calidad</span><span><Check size={14}/> Campañas ampliables</span></div>
       </div>
-      <div className="pub-preview">
+      <div className="pub-preview" style={{ transform: 'none', rotate: 'none' }}>
         <div className="preview-bar"><span className="preview-dots"><i/><i/><i/></span><small>DM · WORKSPACE</small><span className="preview-live">● LIVE</span></div>
         <div className="preview-body">
           <div className="preview-eyebrow"><Sparkles size={12}/> CAMPAIGN INTELLIGENCE</div>
