@@ -4,7 +4,7 @@ import re
 import datetime
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
-from backend.app.database import Campaign, CampaignRun, Lead, AgentLog, Organization, SessionLocal
+from backend.app.database import Campaign, CampaignRun, Lead, AgentLog, Organization, SessionLocal, SellerProfile, ScoringRules
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from dotenv import load_dotenv
@@ -39,6 +39,141 @@ def call_deepseek(system_prompt: str, user_prompt: str, api_key: str, base_url: 
     ]
     response = llm.invoke(messages)
     return response.content
+
+
+def evaluate_seller_profile(profile_data: dict) -> tuple[int, str]:
+    """Score the seller brief while keeping a safe local fallback."""
+    answers = [
+        profile_data.get("offer", ""),
+        profile_data.get("differentiator", ""),
+        profile_data.get("proof", ""),
+        profile_data.get("ideal_customer", ""),
+        profile_data.get("buying_triggers", ""),
+    ]
+    completeness = sum(bool(answer and answer.strip()) for answer in answers)
+    fallback_score = completeness * 20
+    fallback_reason = f"Perfil completado en {completeness} de 5 dimensiones." \
+        if completeness < 5 else "Perfil completo; falta validar la solidez de la propuesta con evidencia comercial."
+
+    tavily_key, deepseek_key, deepseek_base_url = get_api_keys()
+    if not deepseek_key:
+        return fallback_score, fallback_reason
+
+    system_prompt = (
+        "Eres un evaluador de perfiles comerciales B2B. Evalúa la calidad y claridad del brief del vendedor "
+        "en cinco dimensiones: oferta y problema, diferenciador, evidencia, ICP/buyer y señales de compra. "
+        "Devuelve únicamente JSON válido con las llaves score (entero 0-100) y reason (string breve). "
+        "No premies respuestas largas si no son específicas, verificables o accionables."
+    )
+    user_prompt = "\n".join([
+        f"1. Oferta y problema: {answers[0]}",
+        f"2. Diferenciador: {answers[1]}",
+        f"3. Mejores clientes y resultados: {answers[2]}",
+        f"4. ICP y comprador: {answers[3]}",
+        f"5. Señales de compra ahora: {answers[4]}",
+    ])
+    try:
+        response = call_deepseek(system_prompt, user_prompt, deepseek_key, deepseek_base_url)
+        match = re.search(r"\{.*\}", response, re.DOTALL)
+        if match:
+            parsed = json.loads(match.group(0))
+            score = max(0, min(100, int(parsed.get("score", fallback_score))))
+            reason = str(parsed.get("reason", fallback_reason))[:2000]
+            return score, reason
+    except Exception:
+        pass
+    return fallback_score, fallback_reason
+
+
+def prospect_band(score: int) -> str:
+    if score >= 80:
+        return "Hot Prospect"
+    if score >= 60:
+        return "Prospect"
+    if score >= 40:
+        return "Qualified Lead"
+    return "Lead"
+
+
+def score_prospect(comp: dict, seller_profile: SellerProfile | None, intent_score: int = 0, rules: ScoringRules | None = None) -> dict:
+    """Return commercial scores separately from data-confidence checks."""
+    rules = rules or ScoringRules()
+    evidence = f"{comp.get('name', '')} {comp.get('raw_content', '')} {comp.get('research_notes', '')}".lower()
+    seller_text = " ".join([
+        getattr(seller_profile, "offer", "") if seller_profile else "",
+        getattr(seller_profile, "ideal_customer", "") if seller_profile else "",
+        getattr(seller_profile, "buying_triggers", "") if seller_profile else "",
+    ]).lower()
+
+    fit = 0
+    fit += 10 if comp.get("location_verified") else 0
+    fit += 10 if comp.get("business_category_verified") else 0
+    fit += 5 if comp.get("domain_verified") else 0
+    need = 0
+    need += 15 if comp.get("research_notes") and "no verificado" not in comp["research_notes"].lower() else 0
+    need += 10 if any(term in evidence for term in ("problema", "necesidad", "challenge", "pain", "servicio", "solución")) else 0
+    authority = 15 if comp.get("contact_verified") else (8 if comp.get("contact_role") or comp.get("email_verified") else 0)
+    value = 0
+    value += 8 if any(term in evidence for term in ("enterprise", "corporativ", "multinacional", "empleados", "sucursales", "premium") + tuple(re.findall(r"\b(?:[2-9]\d{2,}|\d{1,3}[kKmM])\b", evidence))) else 0
+    value += 7 if seller_text and any(term in evidence for term in seller_text.split() if len(term) > 5) else 0
+    dimensions = {
+        "fit_score": min(100, fit * 4),
+        "need_score": min(100, need * 4),
+        "intent_score": max(0, min(100, intent_score)),
+        "authority_score": min(100, authority * 100 // 15),
+        "value_score": min(100, value * 100 // 15),
+    }
+    total = round(sum(dimensions[key] * weight for key, weight in [
+        ("fit_score", rules.fit_weight or 25),
+        ("need_score", rules.need_weight or 25),
+        ("intent_score", rules.intent_weight or 20),
+        ("authority_score", rules.authority_weight or 15),
+        ("value_score", rules.value_weight or 15),
+    ]) / 100)
+    dimensions["prospect_score"] = total
+    dimensions["prospect_band"] = prospect_band(total)
+    dimensions["seller_score_snapshot"] = seller_profile.seller_score if seller_profile else 0
+    dimensions["mirror_qualified"] = bool(
+        seller_profile and seller_profile.seller_score >= (rules.seller_threshold or 85) and total >= (rules.prospect_threshold or 60)
+    )
+    return dimensions
+
+
+def discover_intent_signal(company: str, location: str, tavily_key: str, deepseek_key: str, base_url: str) -> tuple[int, str]:
+    """Search recent public signals; an unavailable provider never invents intent."""
+    if not tavily_key:
+        return 0, "Sin fuente externa de intent configurada."
+    try:
+        from tavily import TavilyClient
+        client = TavilyClient(api_key=tavily_key)
+        result = client.search(
+            query=f"{company} {location} contratación lanzamiento crecimiento evento proveedor",
+            topic="news",
+            max_results=5,
+        )
+        items = result.get("results", [])
+        if not items:
+            return 0, "No se encontraron señales públicas recientes."
+        evidence = "\n".join(f"{item.get('title', '')}: {item.get('content', '')}" for item in items)
+        signal_terms = ("contrat", "lanzamiento", "crecimiento", "expans", "evento", "apertura", "licitación", "proveedor", "inversión")
+        matches = sum(term in evidence.lower() for term in signal_terms)
+        score = min(100, matches * 15)
+        if deepseek_key:
+            response = call_deepseek(
+                "Clasifica señales de intención de compra B2B. Devuelve solo JSON con score entero 0-100 y signals string. "
+                "No infieras intención si los resultados no contienen evidencia reciente.",
+                f"Empresa: {company}\nUbicación: {location}\nResultados:\n{evidence[:12000]}",
+                deepseek_key,
+                base_url,
+            )
+            match = re.search(r"\{.*\}", response, re.DOTALL)
+            if match:
+                parsed = json.loads(match.group(0))
+                score = max(0, min(100, int(parsed.get("score", score))))
+                return score, str(parsed.get("signals", evidence[:2000]))[:4000]
+        return score, evidence[:4000]
+    except Exception as exc:
+        return 0, f"No se pudo consultar intent: {str(exc)[:300]}"
 
 
 BLOCKED_DOMAIN_PARTS = (
@@ -194,6 +329,14 @@ def execute_pipeline(campaign_id: str, run_id: str | None = None):
         if not org:
             print(f"Organization not found for campaign")
             return
+
+        seller_profile = db.query(SellerProfile).filter(SellerProfile.organization_id == org.id).first()
+        scoring_rules = db.query(ScoringRules).filter(ScoringRules.organization_id == org.id).first()
+        if not scoring_rules:
+            scoring_rules = ScoringRules(organization_id=org.id)
+            db.add(scoring_rules)
+            db.commit()
+            db.refresh(scoring_rules)
 
         # 1. SAAS LIMIT CHECK
         if org.plan == "free" and org.leads_used >= org.leads_limit:
@@ -551,22 +694,38 @@ def execute_pipeline(campaign_id: str, run_id: str | None = None):
 
         scoring_message = "Cálculo matemático de Fit Score completado (ICP ideal):\n"
         for comp in found_companies:
-            score, confidence, priority = calculate_fit(comp, target_niche, target_location)
+            intent_score, intent_signals = discover_intent_signal(
+                comp["name"], target_location, tavily_key, deepseek_key, deepseek_base_url
+            ) if is_using_real else (0, "Simulación local: intent no consultado.")
+            commercial = score_prospect(comp, seller_profile, intent_score, scoring_rules)
+            score = round(sum([
+                commercial["fit_score"] * scoring_rules.fit_weight,
+                commercial["need_score"] * scoring_rules.need_weight,
+                commercial["intent_score"] * scoring_rules.intent_weight,
+                commercial["authority_score"] * scoring_rules.authority_weight,
+                commercial["value_score"] * scoring_rules.value_weight,
+            ]) / 100)
+            comp.update(commercial)
             comp["score"] = score
-            comp["confidence_score"] = confidence
-            comp["priority"] = priority
+            comp["confidence_score"] = sum([
+                bool(comp.get("domain_verified")), bool(comp.get("location_verified")),
+                bool(comp.get("business_category_verified")), bool(comp.get("source_url")),
+                bool(comp.get("email_verified")),
+            ]) * 20
+            comp["priority"] = "HOT" if commercial["prospect_band"] == "Hot Prospect" else "MEDIUM" if commercial["prospect_band"] in {"Prospect", "Qualified Lead"} else "NEEDS_REVIEW"
+            comp["intent_signals"] = intent_signals
             comp["validation_status"] = (
                 "QUALIFIED" if (
                     comp.get("domain_verified")
                     and comp.get("location_verified")
                     and comp.get("business_category_verified")
                     and comp.get("source_type") == "official_site"
-                    and score >= 50
+                    and commercial["prospect_score"] >= scoring_rules.prospect_threshold
                 )
                 else "NEEDS_REVIEW"
             )
             comp["validation_reason"] = validation_reason(comp)
-            scoring_message += f"- {comp['name']}: Fit {score}/100, confianza {confidence}/100 -> {priority} ({comp['validation_status']})\n"
+            scoring_message += f"- {comp['name']}: Prospect {commercial['prospect_score']}/100, confianza {comp['confidence_score']}/100 -> {comp['priority']} ({comp['validation_status']})\n"
 
         log5.status = "completed"
         log5.message = scoring_message
@@ -681,6 +840,15 @@ def execute_pipeline(campaign_id: str, run_id: str | None = None):
                 validation_status=comp.get("validation_status", "NEEDS_REVIEW"),
                 validation_reason=comp.get("validation_reason"),
                 confidence_score=comp.get("confidence_score", 0),
+                fit_score=comp.get("fit_score", 0),
+                need_score=comp.get("need_score", 0),
+                intent_score=comp.get("intent_score", 0),
+                authority_score=comp.get("authority_score", 0),
+                value_score=comp.get("value_score", 0),
+                prospect_score=comp.get("prospect_score", 0),
+                prospect_band=comp.get("prospect_band", "Lead"),
+                seller_score_snapshot=comp.get("seller_score_snapshot", 0),
+                intent_signals=comp.get("intent_signals"),
             )
             db.add(new_lead)
 

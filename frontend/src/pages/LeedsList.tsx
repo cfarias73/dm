@@ -180,6 +180,9 @@ const LeedsList: React.FC = () => {
                           <div className="score-bar-fill" style={{ width: `${lead.score}%` }}></div>
                         </div>
                       </div>
+                      <small style={{ color: 'var(--text-secondary)', display: 'block', marginTop: '4px' }}>
+                        Prospect: {lead.prospect_score ?? 0} · {lead.prospect_band || 'Lead'}
+                      </small>
                     </td>
                     <td>
                       <span className={`badge-priority ${lead.priority.toLowerCase()}`}>

@@ -15,8 +15,8 @@ import httpx
 # Load environment variables
 load_dotenv()
 
-from backend.app.database import init_db, SessionLocal, Organization, User, Campaign, CampaignRun, Lead, AgentLog
-from backend.app.agents.pipeline import execute_pipeline
+from backend.app.database import init_db, SessionLocal, Organization, User, Campaign, CampaignRun, Lead, AgentLog, SellerProfile, ScoringRules
+from backend.app.agents.pipeline import execute_pipeline, evaluate_seller_profile
 
 # Initialize database tables
 init_db()
@@ -54,6 +54,14 @@ class CampaignRunCreate(BaseModel):
     city: Optional[str] = None
     zones: List[str] = []
     run_type: str = "expand"
+
+
+class SellerProfileInput(BaseModel):
+    offer: str = ""
+    differentiator: str = ""
+    proof: str = ""
+    ideal_customer: str = ""
+    buying_triggers: str = ""
 
 
 class OrganizationCreate(BaseModel):
@@ -126,8 +134,25 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
                 db.commit()
                 
     if not user:
-        print(f"DEBUG: User not found for payload: {payload}")
-        raise HTTPException(status_code=403, detail="Usuario sin organización asignada")
+        # Local development can bootstrap an authenticated Supabase user into the demo tenant.
+        # Production must provision users explicitly through the admin flow.
+        if os.getenv("APP_ENV", "development") != "production" and email:
+            local_org = db.query(Organization).filter(Organization.id == "default-tenant-id").first()
+            if local_org:
+                user = User(
+                    organization_id=local_org.id,
+                    name=(payload.get("user_metadata") or {}).get("name") or email.split("@", 1)[0],
+                    email=email,
+                    role="user",
+                    auth_user_id=payload.get("sub"),
+                    is_active=1,
+                )
+                db.add(user)
+                db.commit()
+                db.refresh(user)
+        if not user:
+            print(f"DEBUG: User not found for payload: {payload}")
+            raise HTTPException(status_code=403, detail="Usuario sin organización asignada")
     print(f"DEBUG: Authenticated user: {user.email}, role: {user.role}, auth_user_id: {user.auth_user_id}")
     return user
 
@@ -141,6 +166,17 @@ def require_admin(current_user: User = Depends(get_current_user)) -> User:
 def ensure_org_access(org_id: str, current_user: User):
     if org_id != current_user.organization_id:
         raise HTTPException(status_code=403, detail="No tienes acceso a esta organización")
+
+
+def get_or_create_scoring_rules(db: Session, organization_id: str) -> ScoringRules:
+    rules = db.query(ScoringRules).filter(ScoringRules.organization_id == organization_id).first()
+    if rules:
+        return rules
+    rules = ScoringRules(organization_id=organization_id)
+    db.add(rules)
+    db.commit()
+    db.refresh(rules)
+    return rules
 
 # Endpoints
 @app.get("/api/me")
@@ -194,6 +230,59 @@ def upgrade_organization(org_id: Optional[str] = None, db: Session = Depends(get
         "plan": org.plan,
         "leads_limit": org.leads_limit
     }
+
+
+@app.get("/api/seller-profile")
+def get_seller_profile(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    profile = db.query(SellerProfile).filter(SellerProfile.organization_id == current_user.organization_id).first()
+    if not profile:
+        return {
+            "offer": "", "differentiator": "", "proof": "", "ideal_customer": "", "buying_triggers": "",
+            "seller_score": 0, "seller_score_reason": None, "configured": False,
+        }
+    return {
+        "id": profile.id,
+        "offer": profile.offer,
+        "differentiator": profile.differentiator,
+        "proof": profile.proof,
+        "ideal_customer": profile.ideal_customer,
+        "buying_triggers": profile.buying_triggers,
+        "seller_score": profile.seller_score or 0,
+        "seller_score_reason": profile.seller_score_reason,
+        "configured": all([
+            profile.offer.strip(), profile.differentiator.strip(), profile.proof.strip(),
+            profile.ideal_customer.strip(), profile.buying_triggers.strip(),
+        ]),
+    }
+
+
+@app.put("/api/seller-profile")
+def save_seller_profile(payload: SellerProfileInput, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    values = {key: value.strip() for key, value in payload.model_dump().items()}
+    profile = db.query(SellerProfile).filter(SellerProfile.organization_id == current_user.organization_id).first()
+    if not profile:
+        profile = SellerProfile(organization_id=current_user.organization_id)
+        db.add(profile)
+    for key, value in values.items():
+        setattr(profile, key, value)
+    score, reason = evaluate_seller_profile(values)
+    profile.seller_score = score
+    profile.seller_score_reason = reason
+    db.commit()
+    db.refresh(profile)
+    return {
+        "id": profile.id, **values, "seller_score": profile.seller_score,
+        "seller_score_reason": profile.seller_score_reason, "configured": True,
+    }
+
+
+@app.get("/api/scoring-rules")
+def get_scoring_rules(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    rules = get_or_create_scoring_rules(db, current_user.organization_id)
+    return {column: getattr(rules, column) for column in (
+        "fit_weight", "need_weight", "intent_weight", "authority_weight", "value_weight",
+        "seller_threshold", "prospect_threshold",
+    )}
 
 @app.post("/api/campaigns")
 def create_campaign(campaign_in: CampaignCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -464,6 +553,15 @@ def get_leads(
             "validation_status": l.validation_status or "UNVERIFIED",
             "validation_reason": l.validation_reason,
             "confidence_score": l.confidence_score or 0
+            ,"fit_score": l.fit_score or 0
+            ,"need_score": l.need_score or 0
+            ,"intent_score": l.intent_score or 0
+            ,"authority_score": l.authority_score or 0
+            ,"value_score": l.value_score or 0
+            ,"prospect_score": l.prospect_score or 0
+            ,"prospect_band": l.prospect_band or "Lead"
+            ,"seller_score_snapshot": l.seller_score_snapshot or 0
+            ,"intent_signals": l.intent_signals
         })
     return result
 

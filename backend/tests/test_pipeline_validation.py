@@ -1,6 +1,8 @@
 import unittest
 
 from backend.app.agents.pipeline import (
+    prospect_band,
+    score_prospect,
     has_category_evidence,
     has_business_evidence,
     has_location_evidence,
@@ -42,6 +44,28 @@ class PipelineValidationTests(unittest.TestCase):
     def test_requires_location_context(self):
         self.assertTrue(has_location_evidence("Guadalajara", "Dirección: Av. Vallarta, Guadalajara"))
         self.assertFalse(has_location_evidence("Guadalajara", "Artículo sobre restaurantes en Guadalajara"))
+
+    def test_prospect_bands_follow_client_thresholds(self):
+        self.assertEqual(prospect_band(0), "Lead")
+        self.assertEqual(prospect_band(40), "Qualified Lead")
+        self.assertEqual(prospect_band(60), "Prospect")
+        self.assertEqual(prospect_band(80), "Hot Prospect")
+
+    def test_prospect_score_keeps_commercial_dimensions(self):
+        result = score_prospect({
+            "name": "Pizzeria Capri",
+            "raw_content": "Pizzeria Capri Guadalajara menú, contacto, servicio corporativo y sucursales.",
+            "research_notes": "Empresa con necesidad de eventos y clientes corporativos.",
+            "location_verified": True,
+            "business_category_verified": True,
+            "domain_verified": True,
+            "contact_verified": True,
+            "email_verified": True,
+        }, None, intent_score=80)
+        self.assertEqual(result["fit_score"], 100)
+        self.assertEqual(result["intent_score"], 80)
+        self.assertGreaterEqual(result["prospect_score"], 60)
+        self.assertIn(result["prospect_band"], {"Prospect", "Hot Prospect"})
 
 
 if __name__ == "__main__":

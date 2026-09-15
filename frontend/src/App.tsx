@@ -17,6 +17,10 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3378/api';
 export interface Organization {
   id: string; name: string; plan: string; leads_limit: number; leads_used: number;
 }
+export interface SellerProfile {
+  offer: string; differentiator: string; proof: string; ideal_customer: string; buying_triggers: string;
+  seller_score: number; seller_score_reason?: string | null; configured: boolean;
+}
 export interface Campaign {
   id: string; name: string; prompt: string; city?: string; status: string;
   progress: number; created_at: string; logs?: any[]; max_leads?: number;
@@ -29,7 +33,9 @@ export interface Lead {
   status: string; source_url?: string | null; source_type?: string | null;
   location_verified?: boolean; business_category_verified?: boolean;
   domain_verified?: boolean; contact_verified?: boolean; email_verified?: boolean;
-  validation_status?: string; validation_reason?: string | null; confidence_score?: number;
+   validation_status?: string; validation_reason?: string | null; confidence_score?: number;
+  fit_score?: number; need_score?: number; intent_score?: number; authority_score?: number; value_score?: number;
+  prospect_score?: number; prospect_band?: string; seller_score_snapshot?: number; intent_signals?: string | null;
 }
 
 interface AppContextType {
@@ -37,6 +43,8 @@ interface AppContextType {
   leads: Lead[]; loading: boolean; error: string | null;
   setActiveCampaign: (c: Campaign | null) => void;
   loadOrganization: () => void; loadCampaigns: () => void; loadLeads: () => void;
+  sellerProfile: SellerProfile | null; loadSellerProfile: () => Promise<SellerProfile | null>;
+  saveSellerProfile: (profile: Omit<SellerProfile, 'seller_score' | 'seller_score_reason' | 'configured'>) => Promise<SellerProfile>;
   startCampaign: (name: string, prompt: string, city: string, maxLeads?: number) => Promise<Campaign>;
   upgradeTenant: () => Promise<void>; updateLeadStatus: (leadId: string, status: string, validationStatus?: string, researchNotes?: string) => Promise<void>;
   isPaused: boolean; setIsPaused: (p: boolean) => void;
@@ -127,6 +135,7 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isPaused, setIsPaused] = useState(false);
+  const [sellerProfile, setSellerProfile] = useState<SellerProfile | null>(null);
 
   const loadOrganization = async () => {
     try { const res = await axios.get(`${API_URL}/organizations/default-tenant-id`); setOrg(res.data); } catch { }
@@ -136,6 +145,12 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   };
   const loadLeads = async () => {
     try { const res = await axios.get(`${API_URL}/leads`); setLeads(res.data); } catch { }
+  };
+  const loadSellerProfile = async () => {
+    try { const res = await axios.get(`${API_URL}/seller-profile`); setSellerProfile(res.data); return res.data; } catch { return null; }
+  };
+  const saveSellerProfile = async (profile: Omit<SellerProfile, 'seller_score' | 'seller_score_reason' | 'configured'>) => {
+    const res = await axios.put(`${API_URL}/seller-profile`, profile); setSellerProfile(res.data); return res.data;
   };
   const setActiveCampaign = (c: Campaign | null) => setActiveCampaignState(c);
   const startCampaign = async (name: string, prompt: string, city: string, maxLeads = 12) => {
@@ -164,7 +179,7 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 
   useEffect(() => {
     if (!session) { setLoading(false); return; }
-    const init = async () => { setLoading(true); await loadOrganization(); await loadCampaigns(); await loadLeads(); setLoading(false); };
+    const init = async () => { setLoading(true); await loadOrganization(); await loadCampaigns(); await loadLeads(); await loadSellerProfile(); setLoading(false); };
     init();
   }, [session]);
 
@@ -181,7 +196,7 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     return () => clearInterval(iv);
   }, [activeCampaign?.id, activeCampaign?.status]);
 
-  return <AppContext.Provider value={{ org, campaigns, activeCampaign, leads, loading, error, setActiveCampaign, loadOrganization, loadCampaigns, loadLeads, startCampaign, upgradeTenant, updateLeadStatus, isPaused, setIsPaused }}>{children}</AppContext.Provider>;
+  return <AppContext.Provider value={{ org, campaigns, activeCampaign, leads, loading, error, sellerProfile, loadSellerProfile, saveSellerProfile, setActiveCampaign, loadOrganization, loadCampaigns, loadLeads, startCampaign, upgradeTenant, updateLeadStatus, isPaused, setIsPaused }}>{children}</AppContext.Provider>;
 };
 
 const NavigationSidebar = () => {

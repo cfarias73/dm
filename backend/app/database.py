@@ -22,6 +22,8 @@ class Organization(Base):
 
     users = relationship("User", back_populates="organization", cascade="all, delete-orphan")
     campaigns = relationship("Campaign", back_populates="organization", cascade="all, delete-orphan")
+    seller_profile = relationship("SellerProfile", back_populates="organization", uselist=False, cascade="all, delete-orphan")
+    scoring_rules = relationship("ScoringRules", back_populates="organization", uselist=False, cascade="all, delete-orphan")
 
 class User(Base):
     __tablename__ = "users"
@@ -36,6 +38,40 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     organization = relationship("Organization", back_populates="users")
+
+
+class SellerProfile(Base):
+    __tablename__ = "seller_profiles"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    organization_id = Column(String, ForeignKey("organizations.id"), nullable=False, unique=True)
+    offer = Column(Text, nullable=False, default="")
+    differentiator = Column(Text, nullable=False, default="")
+    proof = Column(Text, nullable=False, default="")
+    ideal_customer = Column(Text, nullable=False, default="")
+    buying_triggers = Column(Text, nullable=False, default="")
+    seller_score = Column(Integer, default=0)
+    seller_score_reason = Column(Text)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+    organization = relationship("Organization", back_populates="seller_profile")
+
+
+class ScoringRules(Base):
+    __tablename__ = "scoring_rules"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    organization_id = Column(String, ForeignKey("organizations.id"), nullable=False, unique=True)
+    fit_weight = Column(Integer, default=25)
+    need_weight = Column(Integer, default=25)
+    intent_weight = Column(Integer, default=20)
+    authority_weight = Column(Integer, default=15)
+    value_weight = Column(Integer, default=15)
+    seller_threshold = Column(Integer, default=85)
+    prospect_threshold = Column(Integer, default=60)
+
+    organization = relationship("Organization", back_populates="scoring_rules")
 
 class Campaign(Base):
     __tablename__ = "campaigns"
@@ -104,6 +140,15 @@ class Lead(Base):
     validation_status = Column(String, default="UNVERIFIED")
     validation_reason = Column(Text)
     confidence_score = Column(Integer, default=0)
+    fit_score = Column(Integer, default=0)
+    need_score = Column(Integer, default=0)
+    intent_score = Column(Integer, default=0)
+    authority_score = Column(Integer, default=0)
+    value_score = Column(Integer, default=0)
+    prospect_score = Column(Integer, default=0)
+    prospect_band = Column(String, default="Lead")
+    seller_score_snapshot = Column(Integer, default=0)
+    intent_signals = Column(Text)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     campaign = relationship("Campaign", back_populates="leads")
@@ -159,6 +204,15 @@ def init_db():
             "validation_status": "VARCHAR DEFAULT 'UNVERIFIED'",
             "validation_reason": "TEXT",
             "confidence_score": "INTEGER DEFAULT 0",
+            "fit_score": "INTEGER DEFAULT 0",
+            "need_score": "INTEGER DEFAULT 0",
+            "intent_score": "INTEGER DEFAULT 0",
+            "authority_score": "INTEGER DEFAULT 0",
+            "value_score": "INTEGER DEFAULT 0",
+            "prospect_score": "INTEGER DEFAULT 0",
+            "prospect_band": "VARCHAR DEFAULT 'Lead'",
+            "seller_score_snapshot": "INTEGER DEFAULT 0",
+            "intent_signals": "TEXT",
         },
     }
     with engine.begin() as connection:
@@ -204,6 +258,8 @@ def init_db():
                 leads_used=4  # Already used 4 leads to show proximity to limit
             )
             db.add(default_org)
+
+            db.add(ScoringRules(organization_id=default_org.id))
 
             # Default User
             default_user = User(

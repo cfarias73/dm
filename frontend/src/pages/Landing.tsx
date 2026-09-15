@@ -1,17 +1,27 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../App';
 import { Sparkles, Play, Search, AlertTriangle } from 'lucide-react';
 
 const Landing: React.FC = () => {
-  const { org, campaigns, startCampaign, setActiveCampaign } = useApp();
+  const { org, campaigns, startCampaign, setActiveCampaign, sellerProfile, saveSellerProfile } = useApp();
   const [prompt, setPrompt] = useState('');
   const [name, setName] = useState('');
   const [city, setCity] = useState('');
   const [maxLeads, setMaxLeads] = useState(12);
+  const [sellerAnswers, setSellerAnswers] = useState({ offer: '', differentiator: '', proof: '', ideal_customer: '', buying_triggers: '' });
   const [loading, setLoading] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (sellerProfile) {
+      setSellerAnswers({
+        offer: sellerProfile.offer || '', differentiator: sellerProfile.differentiator || '', proof: sellerProfile.proof || '',
+        ideal_customer: sellerProfile.ideal_customer || '', buying_triggers: sellerProfile.buying_triggers || '',
+      });
+    }
+  }, [sellerProfile]);
 
   const handleStart = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -19,7 +29,6 @@ const Landing: React.FC = () => {
       setLocalError("Por favor completa el nombre, la ciudad y la necesidad de la campaña.");
       return;
     }
-
     if (org && org.plan === 'free' && org.leads_used >= org.leads_limit) {
       setLocalError("Límite de leads excedido en Plan Gratuito (máximo 5 leads). Actualiza a Plan Premium.");
       return;
@@ -28,6 +37,7 @@ const Landing: React.FC = () => {
     setLoading(true);
     setLocalError(null);
     try {
+      await saveSellerProfile(sellerAnswers);
       await startCampaign(name, prompt, city, maxLeads);
       navigate('/dashboard/overview');
     } catch (err: any) {
@@ -102,6 +112,30 @@ const Landing: React.FC = () => {
         )}
 
         <form onSubmit={handleStart} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          <div style={{ padding: '18px', borderRadius: '12px', background: 'rgba(118, 232, 167, 0.08)', border: '1px solid rgba(118, 232, 167, 0.3)' }}>
+            <h3 style={{ color: 'var(--text-primary)', marginBottom: '6px' }}>Perfil comercial del vendedor</h3>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.82rem', marginBottom: '16px' }}>
+              Estas respuestas se guardan por organización y alimentan el Seller Score de todas tus campañas.
+            </p>
+            {[
+              ['offer', '1. ¿Qué vende tu empresa y qué problema resuelve?'],
+              ['differentiator', '2. ¿Por qué un cliente debería elegirte a ti y no a otra opción?'],
+              ['proof', '3. ¿Quiénes son tus mejores clientes y qué resultados has conseguido con ellos?'],
+              ['ideal_customer', '4. ¿Qué tipo de empresa y qué persona tiene mayor probabilidad de comprarte?'],
+              ['buying_triggers', '5. ¿Qué está pasando en una empresa que indica que podría necesitarte ahora?'],
+            ].map(([key, label]) => (
+              <label key={key} style={{ display: 'block', color: 'var(--text-secondary)', fontSize: '0.85rem', marginTop: '12px' }}>
+                {label}
+                <textarea
+                  rows={2}
+                  value={sellerAnswers[key as keyof typeof sellerAnswers]}
+                  onChange={(event) => setSellerAnswers((current) => ({ ...current, [key]: event.target.value }))}
+                  style={{ display: 'block', width: '100%', marginTop: '6px', padding: '10px', borderRadius: '8px', border: '1px solid var(--border-light)', fontFamily: 'inherit', resize: 'vertical' }}
+                />
+              </label>
+            ))}
+            {sellerProfile?.configured && <small style={{ display: 'block', color: 'var(--text-secondary)', marginTop: '12px' }}>Seller Score actual: <strong>{sellerProfile.seller_score}/100</strong></small>}
+          </div>
           <div>
             <label style={{ display: 'block', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '8px', fontSize: '0.9rem' }}>
               Nombre de la Campaña:
