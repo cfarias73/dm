@@ -144,7 +144,24 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     try { const res = await axios.get(`${API_URL}/campaigns`); setCampaigns(res.data); const r = res.data.find((c: any) => c.status === 'running'); if (r) setActiveCampaignState(r); } catch { }
   };
   const loadLeads = async () => {
-    try { const res = await axios.get(`${API_URL}/leads`); setLeads(res.data); } catch { }
+    try { 
+      const res = await axios.get(`${API_URL}/leads`); 
+      const normalized = (res.data || []).map((l: any) => {
+        let outreach = l.outreach_messages;
+        if (typeof outreach === 'string') {
+          try {
+            outreach = JSON.parse(outreach);
+          } catch {
+            outreach = { email: outreach };
+          }
+        }
+        return {
+          ...l,
+          outreach_messages: outreach || {}
+        };
+      });
+      setLeads(normalized); 
+    } catch { }
   };
   const loadSellerProfile = async () => {
     try { const res = await axios.get(`${API_URL}/seller-profile`); setSellerProfile(res.data); return res.data; } catch { return null; }

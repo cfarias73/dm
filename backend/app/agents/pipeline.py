@@ -768,8 +768,20 @@ def execute_pipeline(campaign_id: str, run_id: str | None = None):
                         json_match = re.search(r'\{.*\}', response, re.DOTALL)
                         if json_match:
                             parsed_outreach = json.loads(json_match.group(0))
-                            if all(k in parsed_outreach for k in ['email', 'whatsapp', 'linkedin']):
-                                outreach = parsed_outreach
+                            normalized_o = {}
+                            for ch in ['email', 'whatsapp', 'linkedin']:
+                                ch_val = parsed_outreach.get(ch)
+                                if isinstance(ch_val, dict):
+                                    if ch == 'email':
+                                        subj = ch_val.get('asunto') or ch_val.get('subject') or ch_val.get('title') or ''
+                                        body = ch_val.get('cuerpo') or ch_val.get('body') or ch_val.get('mensaje') or ch_val.get('message') or ''
+                                        normalized_o[ch] = f"Asunto: {subj}\n\n{body}".strip() if subj else body
+                                    else:
+                                        normalized_o[ch] = ch_val.get('mensaje') or ch_val.get('message') or ch_val.get('cuerpo') or ch_val.get('body') or ch_val.get('text') or str(ch_val)
+                                elif isinstance(ch_val, str):
+                                    normalized_o[ch] = ch_val
+                            if all(k in normalized_o for k in ['email', 'whatsapp', 'linkedin']):
+                                outreach = normalized_o
                     except Exception:
                         pass
                 except Exception as e:

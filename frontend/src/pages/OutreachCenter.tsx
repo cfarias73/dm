@@ -10,6 +10,23 @@ const Linkedin = (props: any) => (
   </svg>
 );
 
+// Helper to extract clean text from strings or nested JSON message objects
+const extractMessageString = (val: any): string => {
+  if (!val) return '';
+  if (typeof val === 'string') return val;
+  if (typeof val === 'object') {
+    const subj = val.asunto || val.subject || val.title || '';
+    const body = val.cuerpo || val.body || val.mensaje || val.message || val.text || '';
+    if (subj && body) return `Asunto: ${subj}\n\n${body}`;
+    if (body) return body;
+    if (subj) return `Asunto: ${subj}`;
+    return Object.entries(val)
+      .map(([k, v]) => `${k.toUpperCase()}: ${v}`)
+      .join('\n\n');
+  }
+  return String(val);
+};
+
 const OutreachCenter: React.FC = () => {
   const { activeCampaign, leads, updateLeadStatus } = useApp();
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
@@ -27,11 +44,21 @@ const OutreachCenter: React.FC = () => {
   // Sync editing text when active tab or selected lead changes
   React.useEffect(() => {
     if (currentLead) {
-      const msg = currentLead.outreach_messages[activeTab] || '';
-      setEditingText(msg);
+      let rawMsg: any = '';
+      if (currentLead.outreach_messages && typeof currentLead.outreach_messages === 'object') {
+        rawMsg = currentLead.outreach_messages[activeTab] || '';
+      } else if (typeof currentLead.outreach_messages === 'string') {
+        try {
+          const parsed = JSON.parse(currentLead.outreach_messages);
+          rawMsg = parsed[activeTab] || '';
+        } catch {
+          rawMsg = activeTab === 'email' ? currentLead.outreach_messages : '';
+        }
+      }
+      setEditingText(extractMessageString(rawMsg));
       setSentSuccess(false);
     }
-  }, [currentLead?.id, activeTab]);
+  }, [currentLead?.id, activeTab, currentLead?.outreach_messages]);
 
   const handleSend = async () => {
     if (!currentLead) return;

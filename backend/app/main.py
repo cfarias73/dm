@@ -525,9 +525,25 @@ def get_leads(
         outreach = {}
         if l.outreach_messages:
             try:
-                outreach = json.loads(l.outreach_messages)
+                raw_outreach = json.loads(l.outreach_messages)
+                if isinstance(raw_outreach, dict):
+                    for ch in ["email", "whatsapp", "linkedin"]:
+                        ch_val = raw_outreach.get(ch)
+                        if isinstance(ch_val, dict):
+                            if ch == "email":
+                                subj = ch_val.get("asunto") or ch_val.get("subject") or ch_val.get("title") or ""
+                                body = ch_val.get("cuerpo") or ch_val.get("body") or ch_val.get("mensaje") or ch_val.get("message") or ""
+                                outreach[ch] = f"Asunto: {subj}\n\n{body}".strip() if subj else body
+                            else:
+                                outreach[ch] = ch_val.get("mensaje") or ch_val.get("message") or ch_val.get("cuerpo") or ch_val.get("body") or ch_val.get("text") or str(ch_val)
+                        elif isinstance(ch_val, str):
+                            outreach[ch] = ch_val
+                        elif ch_val is not None:
+                            outreach[ch] = str(ch_val)
+                else:
+                    outreach = {"email": str(raw_outreach)}
             except Exception:
-                outreach = {"email": l.outreach_messages}
+                outreach = {"email": str(l.outreach_messages)}
                 
         result.append({
             "id": l.id,
