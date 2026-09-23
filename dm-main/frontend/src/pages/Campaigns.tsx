@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { Copy, Expand, Archive, RefreshCw, Plus, MapPin } from 'lucide-react';
 import { useApp, Campaign } from '../App';
@@ -7,6 +8,7 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3378/api';
 
 const Campaigns: React.FC = () => {
   const { campaigns, setActiveCampaign, loadCampaigns } = useApp();
+  const navigate = useNavigate();
   const [busyId, setBusyId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [expandCampaign, setExpandCampaign] = useState<Campaign | null>(null);
@@ -50,7 +52,7 @@ const Campaigns: React.FC = () => {
               Gestiona objetivos, ejecuciones y ampliaciones de prospección.
             </p>
           </div>
-          <button className="btn-primary" onClick={() => window.location.assign('/')} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <button className="btn-primary" onClick={() => navigate('/')} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Plus size={16} /> Nueva campaña
           </button>
         </div>
@@ -67,7 +69,7 @@ const Campaigns: React.FC = () => {
             <article key={campaign.id} className="glass-panel" style={{ padding: '20px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: '20px', flexWrap: 'wrap' }}>
                 <div>
-                  <button onClick={() => { setActiveCampaign(campaign); window.location.assign('/dashboard/overview'); }} style={{ border: 0, background: 'none', padding: 0, cursor: 'pointer', color: 'var(--text-primary)', fontSize: '1.05rem', fontWeight: 800 }}>
+                  <button onClick={() => { setActiveCampaign(campaign); navigate('/dashboard/overview'); }} style={{ border: 0, background: 'none', padding: 0, cursor: 'pointer', color: 'var(--text-primary)', fontSize: '1.05rem', fontWeight: 800 }}>
                     {campaign.name}
                   </button>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-secondary)', fontSize: '0.8rem', marginTop: '8px' }}>
@@ -89,7 +91,7 @@ const Campaigns: React.FC = () => {
                 {campaign.status !== 'archived' && <button className="btn-dark" onClick={() => runAction(campaign, 'archive')} disabled={busyId === campaign.id} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                   <Archive size={14} /> Archivar
                 </button>}
-                <button className="btn-dark" onClick={() => { setActiveCampaign(campaign); window.location.assign('/dashboard/leads'); }}>
+                <button className="btn-dark" onClick={() => { setActiveCampaign(campaign); navigate('/dashboard/leads'); }}>
                   Ver prospectos
                 </button>
               </div>

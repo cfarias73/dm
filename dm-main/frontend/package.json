@@ -6,9 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "start": "npx serve dist -l $PORT",
+    "start": "npx serve -s dist -l $PORT",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "npx serve -s dist -l $PORT"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.0",
