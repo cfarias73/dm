@@ -737,14 +737,34 @@ def delete_admin_user(user_id: str, db: Session = Depends(get_db), current_user:
 # Serve React static files in production mode
 # First check if the directory exists to avoid crashes in dev mode before building the frontend
 frontend_dist_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "frontend", "dist")
+frontend_assets_path = os.path.join(frontend_dist_path, "assets")
 
 if os.path.exists(frontend_dist_path):
-    app.mount("/", StaticFiles(directory=frontend_dist_path, html=True), name="static")
-    
-    # Catch-all route to redirect all unknown routes to React's index.html for client-side routing
-    @app.exception_handler(404)
-    async def custom_404_handler(request, exc):
+    # Mount only the /assets directory for static files (JS, CSS, images)
+    if os.path.exists(frontend_assets_path):
+        app.mount("/assets", StaticFiles(directory=frontend_assets_path), name="assets")
+
+    # Serve specific static files from the root of dist (favicon, logos, etc.)
+    @app.get("/favicon.svg", include_in_schema=False)
+    @app.get("/favicon1.png", include_in_schema=False)
+    @app.get("/logodm.png", include_in_schema=False)
+    @app.get("/icons.svg", include_in_schema=False)
+    async def serve_static_root(request: Request):
+        filename = request.url.path.lstrip("/")
+        file_path = os.path.join(frontend_dist_path, filename)
+        if os.path.exists(file_path):
+            return FileResponse(file_path)
         return FileResponse(os.path.join(frontend_dist_path, "index.html"))
+
+    # Catch-all: serve index.html for ALL non-API routes (SPA support)
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_spa(full_path: str):
+        # Don't intercept API routes (already handled above)
+        if full_path.startswith("api/"):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Not found")
+        index_path = os.path.join(frontend_dist_path, "index.html")
+        return FileResponse(index_path)
 else:
     @app.get("/")
     def read_root():
