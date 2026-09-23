@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { Copy, Expand, Archive, RefreshCw, Plus, MapPin } from 'lucide-react';
+import { Copy, Expand, Archive, RefreshCw, Plus, MapPin, Trash2 } from 'lucide-react';
 import { useApp, Campaign } from '../App';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3378/api';
@@ -37,6 +37,22 @@ const Campaigns: React.FC = () => {
       setMessage(action === 'archive' ? 'Campaña archivada.' : action === 'duplicate' ? 'Campaña duplicada y ejecutándose.' : 'Nueva ejecución iniciada.');
     } catch (error: any) {
       setMessage(error.response?.data?.detail || 'No se pudo completar la acción.');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const deleteCampaign = async (campaign: Campaign) => {
+    const confirmed = window.confirm(`¿Eliminar la campaña "${campaign.name}" y todos sus prospectos? Esta acción no se puede deshacer.`);
+    if (!confirmed) return;
+    setBusyId(campaign.id);
+    setMessage(null);
+    try {
+      await axios.delete(`${API_URL}/campaigns/${campaign.id}`);
+      await loadCampaigns();
+      setMessage('Campaña eliminada correctamente.');
+    } catch (error: any) {
+      setMessage(error.response?.data?.detail || 'No se pudo eliminar la campaña.');
     } finally {
       setBusyId(null);
     }
@@ -81,18 +97,36 @@ const Campaigns: React.FC = () => {
                   {campaign.status.toUpperCase()}
                 </span>
               </div>
-              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '18px' }}>
-                <button className="btn-dark" onClick={() => { setExpandCampaign(campaign); setExpandMaxLeads(campaign.max_leads || 12); setExpandCity(campaign.city || ''); setExpandZones(''); }} disabled={busyId === campaign.id} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <Expand size={14} /> Ampliar
-                </button>
-                <button className="btn-dark" onClick={() => runAction(campaign, 'duplicate')} disabled={busyId === campaign.id} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <Copy size={14} /> Duplicar y ejecutar
-                </button>
-                {campaign.status !== 'archived' && <button className="btn-dark" onClick={() => runAction(campaign, 'archive')} disabled={busyId === campaign.id} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <Archive size={14} /> Archivar
-                </button>}
-                <button className="btn-dark" onClick={() => { setActiveCampaign(campaign); navigate('/dashboard/leads'); }}>
-                  Ver prospectos
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginTop: '18px' }}>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  <button className="btn-dark" onClick={() => { setExpandCampaign(campaign); setExpandMaxLeads(campaign.max_leads || 12); setExpandCity(campaign.city || ''); setExpandZones(''); }} disabled={busyId === campaign.id} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Expand size={14} /> Ampliar
+                  </button>
+                  <button className="btn-dark" onClick={() => runAction(campaign, 'duplicate')} disabled={busyId === campaign.id} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Copy size={14} /> Duplicar y ejecutar
+                  </button>
+                  {campaign.status !== 'archived' && <button className="btn-dark" onClick={() => runAction(campaign, 'archive')} disabled={busyId === campaign.id} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Archive size={14} /> Archivar
+                  </button>}
+                  <button className="btn-dark" onClick={() => { setActiveCampaign(campaign); navigate('/dashboard/leads'); }}>
+                    Ver prospectos
+                  </button>
+                </div>
+                <button
+                  onClick={() => deleteCampaign(campaign)}
+                  disabled={busyId === campaign.id}
+                  title="Eliminar campaña"
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: '6px',
+                    padding: '8px 12px', borderRadius: '8px', border: '1px solid rgba(224, 49, 49, 0.35)',
+                    background: 'rgba(224, 49, 49, 0.08)', color: '#e03131',
+                    cursor: 'pointer', fontSize: '0.82rem', fontWeight: 600,
+                    transition: 'all 0.18s',
+                  }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(224,49,49,0.18)'; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(224,49,49,0.08)'; }}
+                >
+                  <Trash2 size={14} /> Eliminar
                 </button>
               </div>
               {expandCampaign?.id === campaign.id && (
