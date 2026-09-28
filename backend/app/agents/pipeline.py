@@ -299,6 +299,42 @@ def scrape_contact_subpages(base_url: str) -> str:
     return collected.strip()
 
 
+# Common role keywords used to detect person mentions in text
+_ROLE_TERMS = (
+    "director", "gerente", "ceo", "cfo", "cto", "founder", "fundador",
+    "presidente", "manager", "head of", "vp ", "vicepresidente",
+    "responsable", "encargado", "socio", "owner", "propietario",
+)
+
+_INVALID_CONTACT_MARKERS = (
+    "no encontrado", "no disponible", "no identificado", "sin contacto",
+    "not found", "unknown", "n/a", "null", "none", "desconocido",
+)
+
+
+def _is_invalid_contact(value: str | None) -> bool:
+    if not value:
+        return True
+    return any(m in value.lower() for m in _INVALID_CONTACT_MARKERS)
+
+
+def _extract_name_from_snippets(text: str, role_terms=_ROLE_TERMS) -> tuple[str | None, str | None]:
+    """Regex fallback: find 'Name, Role' or 'Role: Name' patterns in plain text."""
+    # Pattern: capitalized word(s) followed by role keyword (e.g. 'Juan Pérez, Director')
+    pattern = r"([A-ZÁÉÍÓÚÜÑ][a-záéíóúüñ]+(?:\s+[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñ]+){1,3})\s*[,\-|]\s*([A-Za-z ]{4,40})"
+    matches = re.findall(pattern, text)
+    for name_candidate, role_candidate in matches:
+        if any(term in role_candidate.lower() for term in role_terms):
+            return name_candidate.strip(), role_candidate.strip()
+    # Reverse pattern: Role keyword followed by name
+    for term in role_terms:
+        pattern2 = rf"{re.escape(term)}[:\s]+([A-ZÁÉÍÓÚÜÑ][a-záéíóúüñ]+(?:\s+[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñ]+){{1,3}})"
+        m = re.search(pattern2, text, re.I)
+        if m:
+            return m.group(1).strip(), term.title()
+    return None, None
+
+
 def discover_contact_tavily(
     company_name: str,
     company_domain: str,
@@ -308,67 +344,114 @@ def discover_contact_tavily(
     deepseek_base_url: str,
 ) -> dict:
     """Solución 1: Active Tavily+DeepSeek search to identify decision-makers.
-    Returns a dict with keys: contact_name, contact_role, contact_email."""
-    empty = {"contact_name": None, "contact_role": None, "contact_email": None}
+    Returns a dict with keys: contact_name, contact_role, contact_email, debug_info."""
+    empty = {"contact_name": None, "contact_role": None, "contact_email": None, "debug_info": "tavily_key faltante"}
     if not tavily_key:
         return empty
     try:
         from tavily import TavilyClient
         client = TavilyClient(api_key=tavily_key)
 
-        # Build queries that target LinkedIn-style bios and press mentions
+        # Diverse queries: LinkedIn profiles, press mentions, about pages, contact pages
         queries = [
-            f'"{company_name}" director gerente fundador CEO {target_location} contacto',
-            f'"{company_name}" {company_domain} email contacto responsable',
+            f"{company_name} director general gerente CEO contacto",
+            f"{company_name} site:{company_domain} contacto equipo directivo",
+            f"{company_name} {target_location} responsable quien dirige",
+            f"{company_name} LinkedIn perfil director manager",
         ]
         snippets = []
         for q in queries:
             try:
-                res = client.search(query=q, max_results=5)
+                res = client.search(query=q, max_results=4)
                 for item in res.get("results", []):
-                    snippets.append(
-                        f"{item.get('title', '')}\n{item.get('content', '')}"
-                    )
-            except Exception:
+                    title = item.get("title", "")
+                    content = item.get("content", "")
+                    url = item.get("url", "")
+                    if content or title:
+                        snippets.append(f"[{url}] {title}\n{content}")
+            except Exception as qe:
+                snippets.append(f"[ERROR query '{q}']: {qe}")
                 continue
 
         if not snippets:
-            return empty
+            return {**empty, "debug_info": "Tavily no retornó resultados"}
 
-        evidence = "\n\n".join(snippets)[:12_000]
+        evidence = "\n\n".join(snippets)[:14_000]
+
+        # --- Regex fallback regardless of DeepSeek ---
+        regex_name, regex_role = _extract_name_from_snippets(evidence)
+        regex_email = extract_public_contact(evidence)
 
         if not deepseek_key:
-            # Fallback: just extract any email found in the snippets
-            email = extract_public_contact(evidence)
-            return {"contact_name": None, "contact_role": None, "contact_email": email}
+            return {
+                "contact_name": regex_name,
+                "contact_role": regex_role,
+                "contact_email": regex_email,
+                "debug_info": f"DeepSeek no disponible; regex: {regex_name}/{regex_role}",
+            }
 
         system_p = (
-            "Eres un agente de contact intelligence B2B. "
-            "Analiza los fragmentos de búsqueda y extrae el tomador de decisiones MÁS RELEVANTE "
-            "de la empresa indicada. "
+            "Eres un agente de contact intelligence B2B experto en investigación de tomadores de decisiones. "
+            "Analiza los fragmentos de búsqueda proporcionados y extrae el contacto más relevante de la empresa. "
+            "INSTRUCCIONES:\n"
+            "- Extrae el NOMBRE COMPLETO de la persona más senior o más relevante mencionada.\n"
+            "- Extrae su CARGO o ROL.\n"
+            "- Extrae su EMAIL si aparece explícitamente.\n"
+            "- Si hay varios candidatos, elige el de mayor jerarquía (CEO > Director > Gerente > Manager).\n"
+            "- Si el nombre aparece en un contexto de la empresa indicada, úsalo aunque no sea 100% seguro.\n"
+            "- Si absolutamente no hay ninguna persona mencionada en los fragmentos, devuelve null solo en contact_name.\n"
             "Devuelve ÚNICAMENTE JSON válido con las llaves: "
-            '"contact_name" (string o null), "contact_role" (string o null), "contact_email" (string o null). '
-            "Si no hay evidencia clara de un contacto real, devuelve null en todas las llaves. "
-            "NO inventes datos."
+            '"contact_name" (string o null), "contact_role" (string o null), "contact_email" (string o null).'
         )
         user_p = (
-            f"Empresa: {company_name}\n"
+            f"Empresa objetivo: {company_name}\n"
             f"Dominio: {company_domain}\n"
-            f"Ubicación: {target_location}\n"
-            f"Fragmentos de búsqueda:\n{evidence}"
+            f"Ciudad: {target_location}\n"
+            f"\nFragmentos de búsqueda:\n{evidence}"
         )
         response = call_deepseek(system_p, user_p, deepseek_key, deepseek_base_url)
-        match = re.search(r"\{.*\}", response, re.DOTALL)
+
+        match = re.search(r"\{[\s\S]*?\}", response)
         if match:
-            parsed = json.loads(match.group(0))
-            return {
-                "contact_name": parsed.get("contact_name") or None,
-                "contact_role": parsed.get("contact_role") or None,
-                "contact_email": parsed.get("contact_email") or None,
-            }
-    except Exception:
-        pass
-    return empty
+            try:
+                parsed = json.loads(match.group(0))
+                ai_name = parsed.get("contact_name")
+                ai_role = parsed.get("contact_role")
+                ai_email = parsed.get("contact_email")
+
+                # Sanitize: reject placeholder strings returned by the LLM
+                if _is_invalid_contact(ai_name):
+                    ai_name = None
+                if _is_invalid_contact(ai_role):
+                    ai_role = None
+                if _is_invalid_contact(ai_email):
+                    ai_email = None
+
+                # Fallback to regex if AI returned nothing
+                final_name = ai_name or regex_name
+                final_role = ai_role or regex_role
+                final_email = ai_email or regex_email
+
+                debug = f"AI={ai_name}/{ai_role} | regex={regex_name}/{regex_role} | email={final_email}"
+                return {
+                    "contact_name": final_name,
+                    "contact_role": final_role,
+                    "contact_email": final_email,
+                    "debug_info": debug,
+                }
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        # JSON parse failed — fall back to regex
+        debug = f"DeepSeek JSON inválido; regex={regex_name}/{regex_role}"
+        return {
+            "contact_name": regex_name,
+            "contact_role": regex_role,
+            "contact_email": regex_email,
+            "debug_info": debug,
+        }
+    except Exception as exc:
+        return {**empty, "debug_info": f"excepción: {str(exc)[:300]}"}
 
 
 def calculate_fit(comp: dict, target_niche: str, target_location: str):
@@ -786,15 +869,10 @@ def execute_pipeline(campaign_id: str, run_id: str | None = None):
                 except Exception:
                     pass
 
-            # Combine all available text for analysis
-            combined_text = " ".join(filter(None, [
-                comp.get("raw_content", ""),
-                subpage_text,
-            ]))
             subpage_email = extract_public_contact(subpage_text) if subpage_text else None
 
             # --- Layer 3 (Solución 1): active Tavily+DeepSeek contact search ---
-            ai_contact = {"contact_name": None, "contact_role": None, "contact_email": None}
+            ai_contact = {"contact_name": None, "contact_role": None, "contact_email": None, "debug_info": "no ejecutado (modo simulación)"}
             if is_using_real:
                 try:
                     ai_contact = discover_contact_tavily(
@@ -806,15 +884,14 @@ def execute_pipeline(campaign_id: str, run_id: str | None = None):
                         deepseek_base_url=deepseek_base_url,
                     )
                 except Exception as e:
-                    print(f"Contact Tavily search error for {comp['name']}: {e}")
+                    ai_contact["debug_info"] = f"excepción externa: {str(e)[:200]}"
 
             # --- Merge results (AI > subpage > regex priority) ---
             contact_name = ai_contact.get("contact_name")
             contact_role = ai_contact.get("contact_role")
-            # Email priority: AI-found > subpage regex > raw_content regex
             final_email = ai_contact.get("contact_email") or subpage_email or regex_email
 
-            # Verify email belongs to company domain (relaxed: also accept corporate providers)
+            # Verify email belongs to company domain
             email_domain = ""
             if final_email and "@" in final_email:
                 email_domain = final_email.rsplit("@", 1)[-1].lower().removeprefix("www.")
@@ -827,7 +904,6 @@ def execute_pipeline(campaign_id: str, run_id: str | None = None):
                     or email_domain.endswith(f".{comp_domain_clean}")
                 )
             )
-            # contact_verified = TRUE when we have at least a name+role from AI
             contact_verified = bool(contact_name and contact_role)
             email_verified = email_on_domain
 
@@ -837,13 +913,15 @@ def execute_pipeline(campaign_id: str, run_id: str | None = None):
             comp["contact_verified"] = contact_verified
             comp["email_verified"] = email_verified
 
+            # Verbose log for diagnosis
             status_parts = []
             if contact_name:
-                status_parts.append(f"{contact_name} ({contact_role or 'rol no identificado'})")
+                status_parts.append(f"{contact_name} ({contact_role or 'rol N/A'})")
             if final_email:
                 status_parts.append(f"email: {final_email}")
             status_str = "; ".join(status_parts) if status_parts else "no encontrado"
-            contact_message += f"- {comp['name']}: {status_str}\n"
+            debug = ai_contact.get("debug_info", "")
+            contact_message += f"- {comp['name']}: {status_str} [debug: {debug}]\n"
 
         log4.status = "completed"
         log4.message = contact_message
