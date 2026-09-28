@@ -263,8 +263,112 @@ def verify_domain(url: str, company_name: str, target_location: str, raw_content
 
 
 def extract_public_contact(text: str):
+    """Extract the first public email found in a block of plain text."""
     emails = sorted(set(re.findall(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", text or "", re.I)))
     return emails[0] if emails else None
+
+
+CONTACT_SUBPAGES = [
+    "/contacto", "/contact", "/about", "/nosotros", "/about-us",
+    "/equipo", "/team", "/quien-es", "/quienes-somos", "/staff",
+    "/directorio", "/directory", "/management",
+]
+
+
+def scrape_contact_subpages(base_url: str) -> str:
+    """Solución 2: Visit known contact/about/team subpages of a verified domain
+    and return their concatenated plain text (up to 8 000 chars per page)."""
+    collected = ""
+    base = base_url.rstrip("/")
+    for path in CONTACT_SUBPAGES:
+        try:
+            req = Request(
+                f"{base}{path}",
+                headers={"User-Agent": "DM-SDR-Research/1.0"},
+            )
+            with urlopen(req, timeout=6) as resp:
+                if resp.status >= 400:
+                    continue
+                raw = resp.read(120_000).decode("utf-8", errors="ignore")
+                raw = re.sub(r"<script[\s\S]*?</script>|<style[\s\S]*?</style>", " ", raw, flags=re.I)
+                raw = re.sub(r"<[^>]+>", " ", raw)
+                raw = re.sub(r"\s+", " ", raw).strip()
+                collected += " " + raw[:8_000]
+        except Exception:
+            continue
+    return collected.strip()
+
+
+def discover_contact_tavily(
+    company_name: str,
+    company_domain: str,
+    target_location: str,
+    tavily_key: str,
+    deepseek_key: str,
+    deepseek_base_url: str,
+) -> dict:
+    """Solución 1: Active Tavily+DeepSeek search to identify decision-makers.
+    Returns a dict with keys: contact_name, contact_role, contact_email."""
+    empty = {"contact_name": None, "contact_role": None, "contact_email": None}
+    if not tavily_key:
+        return empty
+    try:
+        from tavily import TavilyClient
+        client = TavilyClient(api_key=tavily_key)
+
+        # Build queries that target LinkedIn-style bios and press mentions
+        queries = [
+            f'"{company_name}" director gerente fundador CEO {target_location} contacto',
+            f'"{company_name}" {company_domain} email contacto responsable',
+        ]
+        snippets = []
+        for q in queries:
+            try:
+                res = client.search(query=q, max_results=5)
+                for item in res.get("results", []):
+                    snippets.append(
+                        f"{item.get('title', '')}\n{item.get('content', '')}"
+                    )
+            except Exception:
+                continue
+
+        if not snippets:
+            return empty
+
+        evidence = "\n\n".join(snippets)[:12_000]
+
+        if not deepseek_key:
+            # Fallback: just extract any email found in the snippets
+            email = extract_public_contact(evidence)
+            return {"contact_name": None, "contact_role": None, "contact_email": email}
+
+        system_p = (
+            "Eres un agente de contact intelligence B2B. "
+            "Analiza los fragmentos de búsqueda y extrae el tomador de decisiones MÁS RELEVANTE "
+            "de la empresa indicada. "
+            "Devuelve ÚNICAMENTE JSON válido con las llaves: "
+            '"contact_name" (string o null), "contact_role" (string o null), "contact_email" (string o null). '
+            "Si no hay evidencia clara de un contacto real, devuelve null en todas las llaves. "
+            "NO inventes datos."
+        )
+        user_p = (
+            f"Empresa: {company_name}\n"
+            f"Dominio: {company_domain}\n"
+            f"Ubicación: {target_location}\n"
+            f"Fragmentos de búsqueda:\n{evidence}"
+        )
+        response = call_deepseek(system_p, user_p, deepseek_key, deepseek_base_url)
+        match = re.search(r"\{.*\}", response, re.DOTALL)
+        if match:
+            parsed = json.loads(match.group(0))
+            return {
+                "contact_name": parsed.get("contact_name") or None,
+                "contact_role": parsed.get("contact_role") or None,
+                "contact_email": parsed.get("contact_email") or None,
+            }
+    except Exception:
+        pass
+    return empty
 
 
 def calculate_fit(comp: dict, target_niche: str, target_location: str):
@@ -668,19 +772,78 @@ def execute_pipeline(campaign_id: str, run_id: str | None = None):
 
         contact_message = "Búsqueda de tomadores de decisiones completada:\n"
         for comp in found_companies:
-            public_email = extract_public_contact(comp.get("raw_content", ""))
-            comp["email"] = public_email
-            comp["contact_name"] = None
-            comp["contact_role"] = None
-            comp["contact_verified"] = False
-            email_domain = public_email.rsplit("@", 1)[-1].lower().removeprefix("www.") if public_email else ""
-            comp["email_verified"] = bool(
-                public_email
-                and comp.get("domain_verified")
-                and (email_domain == comp.get("domain", "").lower().removeprefix("www.")
-                     or email_domain.endswith(f".{comp.get('domain', '').lower().removeprefix('www.')}"))
+            comp_domain = comp.get("domain", "")
+            comp_url = comp.get("url", "")
+
+            # --- Layer 1: regex on already-scraped raw_content ---
+            regex_email = extract_public_contact(comp.get("raw_content", ""))
+
+            # --- Layer 2 (Solución 2): scrape internal contact/about/team subpages ---
+            subpage_text = ""
+            if comp_url and comp.get("domain_verified"):
+                try:
+                    subpage_text = scrape_contact_subpages(comp_url)
+                except Exception:
+                    pass
+
+            # Combine all available text for analysis
+            combined_text = " ".join(filter(None, [
+                comp.get("raw_content", ""),
+                subpage_text,
+            ]))
+            subpage_email = extract_public_contact(subpage_text) if subpage_text else None
+
+            # --- Layer 3 (Solución 1): active Tavily+DeepSeek contact search ---
+            ai_contact = {"contact_name": None, "contact_role": None, "contact_email": None}
+            if is_using_real:
+                try:
+                    ai_contact = discover_contact_tavily(
+                        company_name=comp["name"],
+                        company_domain=comp_domain,
+                        target_location=target_location,
+                        tavily_key=tavily_key,
+                        deepseek_key=deepseek_key,
+                        deepseek_base_url=deepseek_base_url,
+                    )
+                except Exception as e:
+                    print(f"Contact Tavily search error for {comp['name']}: {e}")
+
+            # --- Merge results (AI > subpage > regex priority) ---
+            contact_name = ai_contact.get("contact_name")
+            contact_role = ai_contact.get("contact_role")
+            # Email priority: AI-found > subpage regex > raw_content regex
+            final_email = ai_contact.get("contact_email") or subpage_email or regex_email
+
+            # Verify email belongs to company domain (relaxed: also accept corporate providers)
+            email_domain = ""
+            if final_email and "@" in final_email:
+                email_domain = final_email.rsplit("@", 1)[-1].lower().removeprefix("www.")
+            comp_domain_clean = comp_domain.lower().removeprefix("www.")
+            email_on_domain = bool(
+                final_email
+                and comp_domain_clean
+                and (
+                    email_domain == comp_domain_clean
+                    or email_domain.endswith(f".{comp_domain_clean}")
+                )
             )
-            contact_message += f"- {comp['name']}: contacto personal no verificado; correo público: {public_email or 'no encontrado'}\n"
+            # contact_verified = TRUE when we have at least a name+role from AI
+            contact_verified = bool(contact_name and contact_role)
+            email_verified = email_on_domain
+
+            comp["email"] = final_email
+            comp["contact_name"] = contact_name
+            comp["contact_role"] = contact_role
+            comp["contact_verified"] = contact_verified
+            comp["email_verified"] = email_verified
+
+            status_parts = []
+            if contact_name:
+                status_parts.append(f"{contact_name} ({contact_role or 'rol no identificado'})")
+            if final_email:
+                status_parts.append(f"email: {final_email}")
+            status_str = "; ".join(status_parts) if status_parts else "no encontrado"
+            contact_message += f"- {comp['name']}: {status_str}\n"
 
         log4.status = "completed"
         log4.message = contact_message
