@@ -11,8 +11,13 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./dm_saas.db")
 if DATABASE_URL.startswith("sqlite"):
     engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 else:
+    # Normalizar postgres:// -> postgresql://
     if DATABASE_URL.startswith("postgres://"):
         DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    # Forzar dialecto psycopg2 explícitamente para evitar que SQLAlchemy
+    # intente cargar psycopg (v3) automáticamente en Python 3.13
+    if DATABASE_URL.startswith("postgresql://") and "+psycopg" not in DATABASE_URL:
+        DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
     engine = create_engine(DATABASE_URL)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
