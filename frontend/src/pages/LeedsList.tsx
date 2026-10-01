@@ -552,7 +552,6 @@ const LeedsList: React.FC = () => {
                     </div>
                   </div>
                 </div>
-              </div>
 
                 {/* Validation Status Box */}
                 <div style={{ 
