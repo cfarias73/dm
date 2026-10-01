@@ -15,7 +15,8 @@ def get_api_keys():
     tavily_key = os.getenv("TAVILY_API_KEY")
     deepseek_key = os.getenv("DEEPSEEK_API_KEY")
     deepseek_base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-    
+    apollo_key = os.getenv("APOLLO_API_KEY")
+
     # Strip any spaces or line breaks
     if tavily_key:
         tavily_key = tavily_key.strip()
@@ -23,8 +24,10 @@ def get_api_keys():
         deepseek_key = deepseek_key.strip()
     if deepseek_base_url:
         deepseek_base_url = deepseek_base_url.strip()
-        
-    return tavily_key, deepseek_key, deepseek_base_url
+    if apollo_key:
+        apollo_key = apollo_key.strip()
+
+    return tavily_key, deepseek_key, deepseek_base_url, apollo_key
 
 def call_deepseek(system_prompt: str, user_prompt: str, api_key: str, base_url: str) -> str:
     llm = ChatOpenAI(
@@ -55,7 +58,7 @@ def evaluate_seller_profile(profile_data: dict) -> tuple[int, str]:
     fallback_reason = f"Perfil completado en {completeness} de 5 dimensiones." \
         if completeness < 5 else "Perfil completo; falta validar la solidez de la propuesta con evidencia comercial."
 
-    tavily_key, deepseek_key, deepseek_base_url = get_api_keys()
+    tavily_key, deepseek_key, deepseek_base_url, _apollo_key = get_api_keys()
     if not deepseek_key:
         return fallback_score, fallback_reason
 
@@ -454,6 +457,111 @@ def discover_contact_tavily(
         return {**empty, "debug_info": f"excepción: {str(exc)[:300]}"}
 
 
+def discover_contact_apollo(
+    company_name: str,
+    company_domain: str,
+    apollo_key: str,
+) -> dict:
+    """Layer 0: Usa Apollo.io para buscar el tomador de decisión más senior de la empresa.
+    Prioridad máxima por encima de Tavily/scraping/regex.
+    Retorna dict con: contact_name, contact_role, contact_email, debug_info."""
+    import urllib.request
+    import urllib.parse
+
+    empty = {"contact_name": None, "contact_role": None, "contact_email": None, "debug_info": "apollo_key faltante"}
+    if not apollo_key:
+        return empty
+    if not company_domain:
+        return {**empty, "debug_info": "dominio vacío"}
+
+    # Títulos de prioridad para tomadores de decisión B2B (orden de jerarquía)
+    DECISION_MAKER_TITLES = [
+        "CEO", "Director General", "Gerente General", "Founder", "Co-Founder",
+        "Presidente", "Owner", "Propietario", "Director Comercial",
+        "Gerente Comercial", "Director de Marketing", "CMO", "COO", "CFO", "CTO",
+        "VP Comercial", "Director de Ventas", "Gerente de Ventas",
+    ]
+
+    try:
+        # --- Llamada 1: Enriquecimiento de organización por dominio ---
+        enrich_url = (
+            f"https://api.apollo.io/v1/organizations/enrich"
+            f"?api_key={apollo_key}&domain={urllib.parse.quote(company_domain)}"
+        )
+        req = urllib.request.Request(
+            enrich_url,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                org_data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+        except Exception as e:
+            org_data = {}
+            print(f"[Apollo] org enrich error for {company_domain}: {e}")
+
+        # --- Llamada 2: Búsqueda de personas por dominio ---
+        people_url = "https://api.apollo.io/v1/mixed_people/search"
+        people_payload = json.dumps({
+            "api_key": apollo_key,
+            "organization_domains": [company_domain],
+            "person_titles": DECISION_MAKER_TITLES,
+            "page": 1,
+            "per_page": 5,
+        }).encode("utf-8")
+        people_req = urllib.request.Request(
+            people_url,
+            data=people_payload,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(people_req, timeout=10) as resp:
+                people_data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+        except Exception as e:
+            people_data = {}
+            print(f"[Apollo] people search error for {company_domain}: {e}")
+
+        people = people_data.get("people", [])
+
+        # Seleccionar el contacto de mayor jerarquía
+        chosen = None
+        for title_pref in DECISION_MAKER_TITLES:
+            for person in people:
+                role = (person.get("title") or "").lower()
+                if title_pref.lower() in role:
+                    chosen = person
+                    break
+            if chosen:
+                break
+        # Si ninguno coincide exactamente, usar el primero
+        if not chosen and people:
+            chosen = people[0]
+
+        if chosen:
+            name = chosen.get("name") or ""
+            role = chosen.get("title") or ""
+            # Apollo devuelve el email en el campo 'email' (puede ser None si no está desbloqueado)
+            email = chosen.get("email") or None
+            # Si el email está redactado (patrón de ocultamiento de Apollo: '***@...')
+            if email and email.startswith("***"):
+                email = None
+            debug = f"Apollo: {name} / {role} / email={'sí' if email else 'no'} | org_domain={company_domain} | people_found={len(people)}"
+            return {
+                "contact_name": name or None,
+                "contact_role": role or None,
+                "contact_email": email,
+                "debug_info": debug,
+            }
+
+        # Sin personas encontradas; intentar extraer del enriquecimiento de org
+        org = org_data.get("organization", {})
+        debug = f"Apollo: 0 personas en people_search | org={org.get('name', '?')} | domain={company_domain}"
+        return {**empty, "debug_info": debug}
+
+    except Exception as exc:
+        return {**empty, "debug_info": f"Apollo excepción: {str(exc)[:300]}"}
+
+
 def calculate_fit(comp: dict, target_niche: str, target_location: str):
     evidence = f"{comp.get('name', '')} {comp.get('raw_content', '')} {comp.get('research_notes', '')}".lower()
     location = target_location.lower() in evidence
@@ -546,8 +654,8 @@ def execute_pipeline(campaign_id: str, run_id: str | None = None):
         db.commit()
 
         # Load fresh keys at runtime
-        tavily_key, deepseek_key, deepseek_base_url = get_api_keys()
-        
+        tavily_key, deepseek_key, deepseek_base_url, apollo_key = get_api_keys()
+
         # Decide if we can run real APIs or fallback to mock
         has_keys = bool(tavily_key and deepseek_key)
         app_env = os.environ.get("APP_ENV", "development")
@@ -871,9 +979,22 @@ def execute_pipeline(campaign_id: str, run_id: str | None = None):
 
             subpage_email = extract_public_contact(subpage_text) if subpage_text else None
 
-            # --- Layer 3 (Solución 1): active Tavily+DeepSeek contact search ---
+            # --- Layer 0 (APOLLO): Búsqueda de decisores en base de datos B2B ---
+            apollo_contact = {"contact_name": None, "contact_role": None, "contact_email": None, "debug_info": "apollo_key no configurada"}
+            if is_using_real and apollo_key and comp_domain:
+                try:
+                    apollo_contact = discover_contact_apollo(
+                        company_name=comp["name"],
+                        company_domain=comp_domain,
+                        apollo_key=apollo_key,
+                    )
+                except Exception as e:
+                    apollo_contact["debug_info"] = f"apollo excepción: {str(e)[:200]}"
+
+            # --- Layer 3 (Tavily+DeepSeek): solo si Apollo no encontró nombre ---
             ai_contact = {"contact_name": None, "contact_role": None, "contact_email": None, "debug_info": "no ejecutado (modo simulación)"}
-            if is_using_real:
+            apollo_found = bool(apollo_contact.get("contact_name"))
+            if is_using_real and not apollo_found:
                 try:
                     ai_contact = discover_contact_tavily(
                         company_name=comp["name"],
@@ -886,10 +1007,21 @@ def execute_pipeline(campaign_id: str, run_id: str | None = None):
                 except Exception as e:
                     ai_contact["debug_info"] = f"excepción externa: {str(e)[:200]}"
 
-            # --- Merge results (AI > subpage > regex priority) ---
-            contact_name = ai_contact.get("contact_name")
-            contact_role = ai_contact.get("contact_role")
-            final_email = ai_contact.get("contact_email") or subpage_email or regex_email
+            # --- Merge results: Apollo > Tavily/AI > subpage > regex ---
+            contact_name = (
+                apollo_contact.get("contact_name")
+                or ai_contact.get("contact_name")
+            )
+            contact_role = (
+                apollo_contact.get("contact_role")
+                or ai_contact.get("contact_role")
+            )
+            final_email = (
+                apollo_contact.get("contact_email")
+                or ai_contact.get("contact_email")
+                or subpage_email
+                or regex_email
+            )
 
             # Verify email belongs to company domain
             email_domain = ""
@@ -905,7 +1037,8 @@ def execute_pipeline(campaign_id: str, run_id: str | None = None):
                 )
             )
             contact_verified = bool(contact_name and contact_role)
-            email_verified = email_on_domain
+            # Apollo emails son verificados; otros requieren match de dominio
+            email_verified = bool(apollo_contact.get("contact_email")) or email_on_domain
 
             comp["email"] = final_email
             comp["contact_name"] = contact_name
@@ -913,15 +1046,17 @@ def execute_pipeline(campaign_id: str, run_id: str | None = None):
             comp["contact_verified"] = contact_verified
             comp["email_verified"] = email_verified
 
-            # Verbose log for diagnosis
+            # Verbose log para diagnóstico
             status_parts = []
+            source_tag = "apollo" if apollo_found else ("tavily" if ai_contact.get("contact_name") else "web")
             if contact_name:
-                status_parts.append(f"{contact_name} ({contact_role or 'rol N/A'})")
+                status_parts.append(f"{contact_name} ({contact_role or 'rol N/A'}) [{source_tag}]")
             if final_email:
                 status_parts.append(f"email: {final_email}")
             status_str = "; ".join(status_parts) if status_parts else "no encontrado"
-            debug = ai_contact.get("debug_info", "")
-            contact_message += f"- {comp['name']}: {status_str} [debug: {debug}]\n"
+            debug_apollo = apollo_contact.get("debug_info", "")
+            debug_tavily = ai_contact.get("debug_info", "") if not apollo_found else "omitido (apollo encontró)"
+            contact_message += f"- {comp['name']}: {status_str} [apollo: {debug_apollo}] [tavily: {debug_tavily}]\n"
 
         log4.status = "completed"
         log4.message = contact_message
