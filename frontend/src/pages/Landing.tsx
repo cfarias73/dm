@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../App';
-import { Sparkles, Play, Search, AlertTriangle } from 'lucide-react';
+import { Sparkles, Play, Search, AlertTriangle, RotateCcw, Trash2, CheckCircle2 } from 'lucide-react';
+
+const DRAFT_STORAGE_KEY = 'dm_new_campaign_draft';
 
 const Landing: React.FC = () => {
   const { org, campaigns, startCampaign, setActiveCampaign, sellerProfile, saveSellerProfile } = useApp();
@@ -12,16 +14,71 @@ const Landing: React.FC = () => {
   const [sellerAnswers, setSellerAnswers] = useState({ offer: '', differentiator: '', proof: '', ideal_customer: '', buying_triggers: '' });
   const [loading, setLoading] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [draftLoaded, setDraftLoaded] = useState(false);
+  const [showAutoSavedBadge, setShowAutoSavedBadge] = useState(false);
   const navigate = useNavigate();
 
+  // 1. Cargar borrador guardado en progreso al montar (si existía)
   useEffect(() => {
+    try {
+      const saved = localStorage.getItem(DRAFT_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.name) setName(parsed.name);
+        if (parsed.city) setCity(parsed.city);
+        if (parsed.prompt) setPrompt(parsed.prompt);
+        if (parsed.maxLeads) setMaxLeads(parsed.maxLeads);
+        if (parsed.sellerAnswers) setSellerAnswers(parsed.sellerAnswers);
+      }
+    } catch (e) {
+      console.error("Error al cargar borrador:", e);
+    }
+    setDraftLoaded(true);
+  }, []);
+
+  // 2. Autoguardado en tiempo real mientras el usuario escribe
+  useEffect(() => {
+    if (!draftLoaded) return;
+    const hasData = Boolean(name.trim() || city.trim() || prompt.trim() || Object.values(sellerAnswers).some(v => Boolean(v?.trim())));
+    if (hasData) {
+      localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify({
+        name,
+        city,
+        prompt,
+        maxLeads,
+        sellerAnswers
+      }));
+      setShowAutoSavedBadge(true);
+      const timer = setTimeout(() => setShowAutoSavedBadge(false), 2000);
+      return () => clearTimeout(timer);
+    } else {
+      localStorage.removeItem(DRAFT_STORAGE_KEY);
+      setShowAutoSavedBadge(false);
+    }
+  }, [name, city, prompt, maxLeads, sellerAnswers, draftLoaded]);
+
+  // 3. Limpiar formulario completo
+  const clearForm = () => {
+    setName('');
+    setCity('');
+    setPrompt('');
+    setMaxLeads(12);
+    setSellerAnswers({ offer: '', differentiator: '', proof: '', ideal_customer: '', buying_triggers: '' });
+    localStorage.removeItem(DRAFT_STORAGE_KEY);
+  };
+
+  // 4. Opción para recargar el perfil de la organización si el usuario lo desea
+  const loadSavedOrgProfile = () => {
     if (sellerProfile) {
       setSellerAnswers({
-        offer: sellerProfile.offer || '', differentiator: sellerProfile.differentiator || '', proof: sellerProfile.proof || '',
-        ideal_customer: sellerProfile.ideal_customer || '', buying_triggers: sellerProfile.buying_triggers || '',
+        offer: sellerProfile.offer || '',
+        differentiator: sellerProfile.differentiator || '',
+        proof: sellerProfile.proof || '',
+        ideal_customer: sellerProfile.ideal_customer || '',
+        buying_triggers: sellerProfile.buying_triggers || '',
       });
     }
-  }, [sellerProfile]);
+  };
 
   const handleStart = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -39,6 +96,8 @@ const Landing: React.FC = () => {
     try {
       await saveSellerProfile(sellerAnswers);
       await startCampaign(name, prompt, city, maxLeads);
+      // Limpiar formulario y borrador inmediatamente tras iniciar la campaña
+      clearForm();
       navigate('/dashboard/overview');
     } catch (err: any) {
       setLocalError(err.message || "Error al iniciar la campaña");
@@ -88,10 +147,17 @@ const Landing: React.FC = () => {
 
       {/* Main Campaign Setup Card (Glassmorphic) */}
       <div className="glass-panel" style={{ padding: '36px', border: '1px solid rgba(255, 255, 255, 0.08)' }}>
-        <h2 style={{ color: 'var(--text-primary)', marginBottom: '20px', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <Sparkles style={{ color: 'var(--accent-mint)' }} />
-          Iniciar Nueva Campaña de Prospección
-        </h2>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
+          <h2 style={{ color: 'var(--text-primary)', margin: 0, fontWeight: 700, display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <Sparkles style={{ color: 'var(--accent-mint)' }} />
+            Iniciar Nueva Campaña de Prospección
+          </h2>
+          {showAutoSavedBadge && (
+            <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.78rem', color: 'var(--accent-mint)', fontWeight: 600, background: 'rgba(118, 232, 167, 0.12)', padding: '4px 10px', borderRadius: '20px' }}>
+              <CheckCircle2 size={14} /> Borrador autoguardado
+            </span>
+          )}
+        </div>
 
         {localError && (
           <div style={{
@@ -113,9 +179,56 @@ const Landing: React.FC = () => {
 
         <form onSubmit={handleStart} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
           <div style={{ padding: '18px', borderRadius: '12px', background: 'rgba(118, 232, 167, 0.08)', border: '1px solid rgba(118, 232, 167, 0.3)' }}>
-            <h3 style={{ color: 'var(--text-primary)', marginBottom: '6px' }}>Perfil comercial del vendedor</h3>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '10px', marginBottom: '6px' }}>
+              <h3 style={{ color: 'var(--text-primary)', margin: 0 }}>Perfil comercial del vendedor</h3>
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                {sellerProfile?.configured && (
+                  <button
+                    type="button"
+                    onClick={loadSavedOrgProfile}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      background: 'rgba(255, 255, 255, 0.8)',
+                      border: '1px solid var(--border-light)',
+                      borderRadius: '6px',
+                      padding: '4px 8px',
+                      fontSize: '0.75rem',
+                      fontWeight: 600,
+                      color: 'var(--text-primary)',
+                      cursor: 'pointer'
+                    }}
+                    title="Cargar las respuestas guardadas de la organización"
+                  >
+                    <RotateCcw size={13} /> Cargar perfil guardado
+                  </button>
+                )}
+                {Object.values(sellerAnswers).some(v => Boolean(v?.trim())) && (
+                  <button
+                    type="button"
+                    onClick={() => setSellerAnswers({ offer: '', differentiator: '', proof: '', ideal_customer: '', buying_triggers: '' })}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      background: 'rgba(255, 255, 255, 0.8)',
+                      border: '1px solid var(--border-light)',
+                      borderRadius: '6px',
+                      padding: '4px 8px',
+                      fontSize: '0.75rem',
+                      fontWeight: 600,
+                      color: '#c92a2a',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <Trash2 size={13} /> Limpiar respuestas
+                  </button>
+                )}
+              </div>
+            </div>
             <p style={{ color: 'var(--text-secondary)', fontSize: '0.82rem', marginBottom: '16px' }}>
-              Estas respuestas se guardan por organización y alimentan el Seller Score de todas tus campañas.
+              Estas respuestas alimentan el Seller Score de la campaña. Al crear la campaña se guardan y el formulario queda limpio para la siguiente.
             </p>
             {[
               ['offer', '1. ¿Qué vende tu empresa y qué problema resuelve?'],
@@ -234,23 +347,47 @@ const Landing: React.FC = () => {
             </p>
           </div>
 
-          <button 
-            type="submit" 
-            disabled={loading}
-            className="btn-primary" 
-            style={{ 
-              alignSelf: 'flex-start', 
-              padding: '14px 32px', 
-              fontSize: '1rem',
-              backgroundColor: 'var(--bg-dark)',
-              color: 'var(--accent-mint)',
-              border: '2px solid var(--accent-mint)',
-              boxShadow: 'none'
-            }}
-          >
-            <Search size={18} />
-            {loading ? 'Inicializando Agentes...' : 'Start Research'}
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap', marginTop: '10px' }}>
+            <button 
+              type="submit" 
+              disabled={loading}
+              className="btn-primary" 
+              style={{ 
+                padding: '14px 32px', 
+                fontSize: '1rem',
+                backgroundColor: 'var(--bg-dark)',
+                color: 'var(--accent-mint)',
+                border: '2px solid var(--accent-mint)',
+                boxShadow: 'none'
+              }}
+            >
+              <Search size={18} />
+              {loading ? 'Inicializando Agentes...' : 'Start Research'}
+            </button>
+
+            {(name || city || prompt || Object.values(sellerAnswers).some(v => Boolean(v?.trim()))) && (
+              <button
+                type="button"
+                onClick={clearForm}
+                disabled={loading}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  background: 'none',
+                  border: '1px solid var(--border-light)',
+                  borderRadius: '10px',
+                  padding: '12px 20px',
+                  color: 'var(--text-secondary)',
+                  fontSize: '0.9rem',
+                  fontWeight: 600,
+                  cursor: 'pointer'
+                }}
+              >
+                <Trash2 size={16} /> Limpiar todo el formulario
+              </button>
+            )}
+          </div>
         </form>
       </div>
 
