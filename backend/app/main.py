@@ -23,10 +23,20 @@ init_db()
 
 app = FastAPI(title="DM Autonomous SDR Platform API")
 
-# Configure CORS for local development
+# Configure CORS — wildcard "*" no es compatible con allow_credentials=True (spec CORS).
+# Se leen orígenes adicionales desde ALLOWED_ORIGINS (separados por coma) en Railway.
+_raw_origins = os.getenv("ALLOWED_ORIGINS", "")
+_extra_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+ALLOWED_ORIGINS = list(set([
+    "https://dm1.up.railway.app",       # frontend Railway producción
+    "http://localhost:5173",            # frontend Vite dev
+    "http://localhost:3378",            # backend dev (self)
+    "http://localhost:3000",
+] + _extra_origins))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
