@@ -462,8 +462,10 @@ def discover_contact_apollo(
     company_domain: str,
     apollo_key: str,
 ) -> dict:
-    """Layer 0: Usa Apollo.io para buscar el tomador de decisión más senior de la empresa.
-    Prioridad máxima por encima de Tavily/scraping/regex.
+    """Layer 0: Usa Apollo.io para buscar el tomador de decision mas senior de la empresa.
+    Estrategia: GET /organizations/enrich -> org_id -> POST /mixed_people/api_search.
+    CRITICO: API key DEBE ir en header X-Api-Key (Apollo depreco otras formas).
+    CRITICO: Usar /api_search, no /search (este ultimo esta deprecado para API callers).
     Retorna dict con: contact_name, contact_role, contact_email, debug_info."""
     import urllib.request
     import urllib.parse
@@ -472,94 +474,100 @@ def discover_contact_apollo(
     if not apollo_key:
         return empty
     if not company_domain:
-        return {**empty, "debug_info": "dominio vacío"}
+        return {**empty, "debug_info": "dominio vacio"}
 
-    # Títulos de prioridad para tomadores de decisión B2B (orden de jerarquía)
     DECISION_MAKER_TITLES = [
-        "CEO", "Director General", "Gerente General", "Founder", "Co-Founder",
-        "Presidente", "Owner", "Propietario", "Director Comercial",
-        "Gerente Comercial", "Director de Marketing", "CMO", "COO", "CFO", "CTO",
-        "VP Comercial", "Director de Ventas", "Gerente de Ventas",
+        "ceo", "director general", "gerente general", "founder", "co-founder",
+        "presidente", "owner", "propietario", "director comercial",
+        "gerente comercial", "director de marketing", "cmo", "coo", "cfo", "cto",
+        "vp comercial", "director de ventas", "gerente de ventas",
+        "director", "gerente", "manager", "head",
     ]
 
+    APOLLO_HEADERS = {
+        "X-Api-Key": apollo_key,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
     try:
-        # --- Llamada 1: Enriquecimiento de organización por dominio ---
+        # --- Paso 1: Enriquecimiento de organizacion por dominio ---
         enrich_url = (
-            f"https://api.apollo.io/v1/organizations/enrich"
-            f"?api_key={apollo_key}&domain={urllib.parse.quote(company_domain)}"
+            "https://api.apollo.io/v1/organizations/enrich"
+            f"?domain={urllib.parse.quote(company_domain)}"
         )
-        req = urllib.request.Request(
-            enrich_url,
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
-        )
+        req = urllib.request.Request(enrich_url, headers=APOLLO_HEADERS)
+        org_data = {}
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:
                 org_data = json.loads(resp.read().decode("utf-8", errors="ignore"))
         except Exception as e:
-            org_data = {}
-            print(f"[Apollo] org enrich error for {company_domain}: {e}")
+            return {**empty, "debug_info": f"Apollo org enrich error: {str(e)[:200]}"}
 
-        # --- Llamada 2: Búsqueda de personas por dominio ---
-        people_url = "https://api.apollo.io/v1/mixed_people/search"
+        org = org_data.get("organization") or {}
+        org_id = org.get("id")
+        if not org_id:
+            apollo_err = org_data.get("error", "sin org_id")
+            return {**empty, "debug_info": f"Apollo: org no encontrada | domain={company_domain} | err={str(apollo_err)[:100]}"}
+
+        # --- Paso 2: Buscar personas por organization_id ---
+        people_url = "https://api.apollo.io/v1/mixed_people/api_search"
         people_payload = json.dumps({
-            "api_key": apollo_key,
-            "organization_domains": [company_domain],
-            "person_titles": DECISION_MAKER_TITLES,
+            "organization_ids": [org_id],
             "page": 1,
             "per_page": 5,
         }).encode("utf-8")
         people_req = urllib.request.Request(
-            people_url,
-            data=people_payload,
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
-            method="POST",
+            people_url, data=people_payload, headers=APOLLO_HEADERS, method="POST"
         )
+        people_data = {}
         try:
             with urllib.request.urlopen(people_req, timeout=10) as resp:
                 people_data = json.loads(resp.read().decode("utf-8", errors="ignore"))
         except Exception as e:
-            people_data = {}
-            print(f"[Apollo] people search error for {company_domain}: {e}")
+            return {**empty, "debug_info": f"Apollo people api_search error: org_id={org_id} | {str(e)[:200]}"}
 
         people = people_data.get("people", [])
 
-        # Seleccionar el contacto de mayor jerarquía
+        # Seleccionar contacto de mayor jerarquia
         chosen = None
         for title_pref in DECISION_MAKER_TITLES:
             for person in people:
-                role = (person.get("title") or "").lower()
-                if title_pref.lower() in role:
+                if title_pref in (person.get("title") or "").lower():
                     chosen = person
                     break
             if chosen:
                 break
-        # Si ninguno coincide exactamente, usar el primero
         if not chosen and people:
             chosen = people[0]
 
         if chosen:
-            name = chosen.get("name") or ""
+            first = chosen.get("first_name") or ""
+            last = chosen.get("last_name") or chosen.get("last_name_obfuscated") or ""
+            full_name = f"{first} {last}".strip() or chosen.get("name") or ""
             role = chosen.get("title") or ""
-            # Apollo devuelve el email en el campo 'email' (puede ser None si no está desbloqueado)
             email = chosen.get("email") or None
-            # Si el email está redactado (patrón de ocultamiento de Apollo: '***@...')
-            if email and email.startswith("***"):
+            if email and "***" in email:
                 email = None
-            debug = f"Apollo: {name} / {role} / email={'sí' if email else 'no'} | org_domain={company_domain} | people_found={len(people)}"
+            has_email = chosen.get("has_email", False)
+            debug = (
+                f"Apollo OK: {full_name} / {role} | org={org.get('name','?')} | "
+                f"people={len(people)} | email={'si' if email else ('bloqueado' if has_email else 'no')}"
+            )
             return {
-                "contact_name": name or None,
+                "contact_name": full_name or None,
                 "contact_role": role or None,
                 "contact_email": email,
                 "debug_info": debug,
             }
 
-        # Sin personas encontradas; intentar extraer del enriquecimiento de org
-        org = org_data.get("organization", {})
-        debug = f"Apollo: 0 personas en people_search | org={org.get('name', '?')} | domain={company_domain}"
-        return {**empty, "debug_info": debug}
+        return {
+            **empty,
+            "debug_info": f"Apollo: 0 personas | org={org.get('name','?')} | org_id={org_id} | total={people_data.get('total_entries',0)}",
+        }
 
     except Exception as exc:
-        return {**empty, "debug_info": f"Apollo excepción: {str(exc)[:300]}"}
+        return {**empty, "debug_info": f"Apollo excepcion: {str(exc)[:300]}"}
 
 
 def calculate_fit(comp: dict, target_niche: str, target_location: str):
