@@ -569,7 +569,7 @@ const LeedsList: React.FC = () => {
                     </div>
                     {selectedLead.confidence_score !== undefined && (
                       <span style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-secondary)' }}>
-                        Confianza: {Math.round((selectedLead.confidence_score || 0) * 100)}%
+                        Confianza: {Math.min(100, Math.round((selectedLead.confidence_score || 0) > 1 ? (selectedLead.confidence_score || 0) : (selectedLead.confidence_score || 0) * 100))}%
                       </span>
                     )}
                   </div>

@@ -575,6 +575,7 @@ def get_leads(
             "contact_name": l.contact_name,
             "contact_role": l.contact_role,
             "contact_email": l.contact_email,
+            "contact_phone": l.contact_phone,
             "research_notes": l.research_notes,
             "outreach_messages": outreach,
             "status": l.status,
