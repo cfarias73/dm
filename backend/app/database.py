@@ -139,6 +139,7 @@ class Lead(Base):
     contact_name = Column(String)
     contact_role = Column(String)
     contact_email = Column(String)
+    contact_phone = Column(String)
     research_notes = Column(Text)
     outreach_messages = Column(Text)  # JSON string
     status = Column(String, default="NEW")  # "NEW", "CONTACTED", "RESPONDED", "MEETING", "CLOSED_LOST"
@@ -213,6 +214,7 @@ def init_db():
             "business_category_verified": "INTEGER DEFAULT 0",
             "domain_verified": "INTEGER DEFAULT 0",
             "contact_verified": "INTEGER DEFAULT 0",
+            "contact_phone": "VARCHAR",
             "email_verified": "INTEGER DEFAULT 0",
             "validation_status": "VARCHAR DEFAULT 'UNVERIFIED'",
             "validation_reason": "TEXT",

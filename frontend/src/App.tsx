@@ -28,7 +28,7 @@ export interface Campaign {
 export interface Lead {
   id: string; campaign_id: string; company_name: string; website: string;
   score: number; priority: string; contact_name: string | null;
-  contact_role: string | null; contact_email: string | null;
+  contact_role: string | null; contact_email: string | null; contact_phone: string | null;
   research_notes: string; outreach_messages: { email?: string; whatsapp?: string; linkedin?: string; };
   status: string; source_url?: string | null; source_type?: string | null;
   location_verified?: boolean; business_category_verified?: boolean;

@@ -529,8 +529,30 @@ const LeedsList: React.FC = () => {
                         <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Sin correo directo registrado</span>
                       )}
                     </div>
+
+                    {/* Teléfono */}
+                    <div>
+                      <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '2px' }}>Teléfono:</span>
+                      {selectedLead.contact_phone ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <a href={`tel:${selectedLead.contact_phone}`} style={{ fontWeight: 700, fontSize: '0.92rem', color: '#059669', textDecoration: 'none' }}>
+                            {selectedLead.contact_phone}
+                          </a>
+                          <button
+                            onClick={() => handleCopy(selectedLead.contact_phone || '', 'phone')}
+                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center' }}
+                            title="Copiar teléfono"
+                          >
+                            {copiedKey === 'phone' ? <Check size={14} style={{ color: '#059669' }} /> : <Copy size={14} />}
+                          </button>
+                        </div>
+                      ) : (
+                        <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Sin teléfono registrado</span>
+                      )}
+                    </div>
                   </div>
                 </div>
+              </div>
 
                 {/* Validation Status Box */}
                 <div style={{ 

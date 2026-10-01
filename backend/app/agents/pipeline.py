@@ -550,14 +550,27 @@ def discover_contact_apollo(
             if email and "***" in email:
                 email = None
             has_email = chosen.get("has_email", False)
+            # Teléfono: Apollo devuelve phone_numbers como lista de dicts {raw_number, ...}
+            phone = None
+            phone_numbers = chosen.get("phone_numbers") or []
+            if phone_numbers and isinstance(phone_numbers, list):
+                raw = phone_numbers[0].get("raw_number") or phone_numbers[0].get("sanitized_number") or ""
+                if raw:
+                    phone = raw
+            # Fallback: teléfono de la organización
+            if not phone:
+                org_phone = org.get("phone") or ""
+                if org_phone and "***" not in org_phone:
+                    phone = org_phone
             debug = (
                 f"Apollo OK: {full_name} / {role} | org={org.get('name','?')} | "
-                f"people={len(people)} | email={'si' if email else ('bloqueado' if has_email else 'no')}"
+                f"people={len(people)} | email={'si' if email else ('bloqueado' if has_email else 'no')} | phone={'si' if phone else 'no'}"
             )
             return {
                 "contact_name": full_name or None,
                 "contact_role": role or None,
                 "contact_email": email,
+                "contact_phone": phone,
                 "debug_info": debug,
             }
 
@@ -988,8 +1001,10 @@ def execute_pipeline(campaign_id: str, run_id: str | None = None):
             subpage_email = extract_public_contact(subpage_text) if subpage_text else None
 
             # --- Layer 0 (APOLLO): Búsqueda de decisores en base de datos B2B ---
-            apollo_contact = {"contact_name": None, "contact_role": None, "contact_email": None, "debug_info": "apollo_key no configurada"}
-            if is_using_real and apollo_key and comp_domain:
+            # Solo llamar a Apollo si el dominio es de la empresa (no un agregador/directorio)
+            apollo_contact = {"contact_name": None, "contact_role": None, "contact_email": None, "contact_phone": None, "debug_info": "apollo_key no configurada"}
+            domain_is_company = comp_domain and not is_blocked_source(f"https://{comp_domain}")
+            if is_using_real and apollo_key and domain_is_company:
                 try:
                     apollo_contact = discover_contact_apollo(
                         company_name=comp["name"],
@@ -999,10 +1014,11 @@ def execute_pipeline(campaign_id: str, run_id: str | None = None):
                 except Exception as e:
                     apollo_contact["debug_info"] = f"apollo excepción: {str(e)[:200]}"
 
-            # --- Layer 3 (Tavily+DeepSeek): solo si Apollo no encontró nombre ---
+            # --- Layer 3 (Tavily+DeepSeek): SOLO si Apollo no encontró nombre Y dominio es de la empresa ---
+            # Si el dominio es un agregador/gov, Tavily producirá basura (ubicaciones, textos, etc.)
             ai_contact = {"contact_name": None, "contact_role": None, "contact_email": None, "debug_info": "no ejecutado (modo simulación)"}
             apollo_found = bool(apollo_contact.get("contact_name"))
-            if is_using_real and not apollo_found:
+            if is_using_real and not apollo_found and domain_is_company:
                 try:
                     ai_contact = discover_contact_tavily(
                         company_name=comp["name"],
@@ -1024,6 +1040,7 @@ def execute_pipeline(campaign_id: str, run_id: str | None = None):
                 apollo_contact.get("contact_role")
                 or ai_contact.get("contact_role")
             )
+            contact_phone = apollo_contact.get("contact_phone")
             final_email = (
                 apollo_contact.get("contact_email")
                 or ai_contact.get("contact_email")
@@ -1051,6 +1068,7 @@ def execute_pipeline(campaign_id: str, run_id: str | None = None):
             comp["email"] = final_email
             comp["contact_name"] = contact_name
             comp["contact_role"] = contact_role
+            comp["contact_phone"] = contact_phone
             comp["contact_verified"] = contact_verified
             comp["email_verified"] = email_verified
 
@@ -1061,6 +1079,8 @@ def execute_pipeline(campaign_id: str, run_id: str | None = None):
                 status_parts.append(f"{contact_name} ({contact_role or 'rol N/A'}) [{source_tag}]")
             if final_email:
                 status_parts.append(f"email: {final_email}")
+            if contact_phone:
+                status_parts.append(f"tel: {contact_phone}")
             status_str = "; ".join(status_parts) if status_parts else "no encontrado"
             debug_apollo = apollo_contact.get("debug_info", "")
             debug_tavily = ai_contact.get("debug_info", "") if not apollo_found else "omitido (apollo encontró)"
@@ -1222,6 +1242,7 @@ def execute_pipeline(campaign_id: str, run_id: str | None = None):
                 contact_name=comp.get("contact_name"),
                 contact_role=comp.get("contact_role"),
                 contact_email=comp.get("email"),
+                contact_phone=comp.get("contact_phone"),
                 research_notes=comp.get("research_notes", "Identificado en prospección real."),
                 outreach_messages=json.dumps(comp["outreach"]),
                 status="NEW",
