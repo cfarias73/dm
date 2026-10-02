@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useApp } from '../App';
 import { Sparkles, Play, Search, AlertTriangle, RotateCcw, Trash2, CheckCircle2 } from 'lucide-react';
 
@@ -17,21 +17,28 @@ const Landing: React.FC = () => {
   const [draftLoaded, setDraftLoaded] = useState(false);
   const [showAutoSavedBadge, setShowAutoSavedBadge] = useState(false);
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
 
   // 1. Cargar borrador guardado en progreso al montar (si existía)
+  //    Si la URL contiene ?new=1 o ?new=true, se fuerza un formulario limpio.
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem(DRAFT_STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed.name) setName(parsed.name);
-        if (parsed.city) setCity(parsed.city);
-        if (parsed.prompt) setPrompt(parsed.prompt);
-        if (parsed.maxLeads) setMaxLeads(parsed.maxLeads);
-        if (parsed.sellerAnswers) setSellerAnswers(parsed.sellerAnswers);
+    const forceNew = searchParams.get('new') === '1' || searchParams.get('new') === 'true';
+    if (forceNew) {
+      localStorage.removeItem(DRAFT_STORAGE_KEY);
+    } else {
+      try {
+        const saved = localStorage.getItem(DRAFT_STORAGE_KEY);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (parsed.name) setName(parsed.name);
+          if (parsed.city) setCity(parsed.city);
+          if (parsed.prompt) setPrompt(parsed.prompt);
+          if (parsed.maxLeads) setMaxLeads(parsed.maxLeads);
+          if (parsed.sellerAnswers) setSellerAnswers(parsed.sellerAnswers);
+        }
+      } catch (e) {
+        console.error("Error al cargar borrador:", e);
       }
-    } catch (e) {
-      console.error("Error al cargar borrador:", e);
     }
     setDraftLoaded(true);
   }, []);
@@ -107,6 +114,8 @@ const Landing: React.FC = () => {
   };
 
   const selectCampaign = (camp: any) => {
+    // No limpiamos el borrador al seleccionar una campaña previa;
+    // el borrador se mantiene por si el usuario quiere volver a completarlo.
     setActiveCampaign(camp);
     navigate('/dashboard/overview');
   };

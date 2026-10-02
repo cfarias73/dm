@@ -68,7 +68,7 @@ const Campaigns: React.FC = () => {
               Gestiona objetivos, ejecuciones y ampliaciones de prospección.
             </p>
           </div>
-          <button className="btn-primary" onClick={() => navigate('/')} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <button className="btn-primary" onClick={() => navigate('/?new=1')} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Plus size={16} /> Nueva campaña
           </button>
         </div>
